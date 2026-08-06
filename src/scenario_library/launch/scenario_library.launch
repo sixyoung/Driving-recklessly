@@ -102,10 +102,10 @@
     <param name="scene_file_path" value="$(arg scenario_path)"/>
   </node>
 
-  <!-- One-row monitor: CARLA scene | ST | SL | AT. It waits for the fixed
-       random-behavior vehicle and does not write blank GIF frames. -->
+  <!-- One-row expected-channel monitor:
+       CARLA scene | ST speed | SL lateral | AT acceleration. -->
   <node pkg="behavior_identification"
-        type="realtime_channel_visualizer_row.py"
+        type="realtime_channel_visualizer_expected.py"
         name="realtime_channel_visualizer"
         output="screen"
         if="$(arg enable_channel_visualizer)">
