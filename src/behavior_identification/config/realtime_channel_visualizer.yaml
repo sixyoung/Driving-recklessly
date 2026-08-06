@@ -2,7 +2,6 @@
 update_hz: 10.0
 gif_fps: 5.0
 max_history_seconds: 45.0
-max_gif_frames: 900
 gif_width: 1280
 show_window: true
 save_gif: false
@@ -13,18 +12,12 @@ ffmpeg_bin: "/usr/bin/ffmpeg"
 vehicle_id: -1
 role_name: ""
 auto_select_random_behavior: true
-selection_fallback_delay: 2.0
+selection_fallback_delay: 5.0
 vehicle_config_topic: "/carla/vehicle_config"
 path_service: "/carla_waypoint_publisher/get_path"
 
-# First panel: topdown is dependency-free; camera and screen are optional.
-scene_source: "topdown"
-camera_topic: ""
+# Scenario panel: dependency-free top-down view of route and vehicles.
 scene_radius: 35.0
-screen_left: 0
-screen_top: 0
-screen_width: 1280
-screen_height: 720
 
 # ST channel
 stop_line_lateral_gate: 8.0
@@ -32,10 +25,11 @@ stop_line_cross_margin: 0.5
 
 # SL channel
 # Delta-l is measured in the Frenet frame of the frozen initial expected path.
-# A normal intersection turn therefore stays near zero, while a real lateral
-# lane shift remains visible.
+# A normal intersection turn stays near zero; a true lane shift remains visible.
 sl_lateral_limit: 1.5
 sl_baseline_samples: 10
 
 # AT channel
 max_accel: 3.0
+overspeed_threshold: 15.0
+slow_speed_threshold: 6.0
