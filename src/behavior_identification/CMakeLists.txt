@@ -69,5 +69,6 @@ catkin_install_python(PROGRAMS
   scripts/realtime_channel_visualizer.py
   scripts/realtime_channel_visualizer_row.py
   scripts/realtime_channel_visualizer_expected.py
+  scripts/realtime_channel_visualizer_lane_aware.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
