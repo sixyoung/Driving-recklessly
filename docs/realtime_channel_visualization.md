@@ -1,22 +1,19 @@
-# Real-time ST / SL / AT channel visualization
+# Real-time CARLA / ST / SL / AT visualization
 
-This branch adds an optional four-panel Matplotlib monitor to the existing CARLA scenario launcher.
-
-## Panels
-
-1. **Scenario**: live top-down positions, target trajectory, frozen expected route and traffic-light stop points.
-2. **ST**: signed longitudinal distance from the target vehicle to the active signal-controlled stop line.
-3. **SL**: true lateral shift relative to the frozen initial route.
-4. **AT**: longitudinal acceleration and speed with channel thresholds.
-
-The SL panel does not use the straight chord between the first and last observed positions. Each vehicle position is projected into the Frenet frame of the initial planned route:
+This branch adds a one-row visualization and GIF recorder:
 
 ```text
-l(t) = (p(t) - p_r(s*))^T n(s*)
-Delta l(t) = l(t) - l_baseline
+| CARLA real scene | ST channel | SL channel | AT channel |
 ```
 
-A normal curved turn therefore remains close to zero, while an actual lane shift produces a persistent change in `Delta l`.
+The node does not start channel sampling immediately. It waits for the fixed vehicle whose `VehicleConfig.is_random_behavior_vehicle` field is `true`. It then waits until the same CARLA actor ID appears in `/veh_state_sequences`. Only after both conditions are satisfied does it:
+
+- start the time axis;
+- draw the channel curves;
+- capture CARLA frames;
+- start writing GIF frames.
+
+No blank waiting frames are written to the GIF.
 
 ## Pull and build
 
@@ -28,21 +25,22 @@ catkin_make
 source devel/setup.bash
 ```
 
-Required runtime commands/packages:
-
-```bash
-python3 -c "import numpy, matplotlib, rospy"
-ffmpeg -version
-```
-
-On Ubuntu/ROS Noetic, missing visualization dependencies can normally be installed with:
+Install the screen-capture dependencies:
 
 ```bash
 sudo apt update
-sudo apt install python3-numpy python3-matplotlib ffmpeg
+sudo apt install python3-numpy python3-matplotlib python3-pil ffmpeg xdotool
 ```
 
-## Run with a live window
+`mss` is optional but faster than Pillow:
+
+```bash
+python3 -m pip install mss
+```
+
+## Run
+
+Start CARLA first, then run:
 
 ```bash
 python3 src/scenario_library/scripts/run_scenario.py \
@@ -50,44 +48,12 @@ python3 src/scenario_library/scripts/run_scenario.py \
   --visualize_channels
 ```
 
-The monitor first tries to select the vehicle marked as the random-behavior vehicle. If no such configuration is received, it selects the first configured vehicle after the fallback delay.
-
-## Select a target explicitly
-
-By CARLA actor ID:
+Save the one-row GIF:
 
 ```bash
 python3 src/scenario_library/scripts/run_scenario.py \
   <scenario.json> \
   --visualize_channels \
-  --vehicle_id 123
-```
-
-By role name:
-
-```bash
-python3 src/scenario_library/scripts/run_scenario.py \
-  <scenario.json> \
-  --visualize_channels \
-  --visualized_role heroL0
-```
-
-When `--random_role` is supplied and `--visualized_role` is omitted, the same role is used as the visualization target:
-
-```bash
-python3 src/scenario_library/scripts/run_scenario.py \
-  <scenario.json> \
-  --random_role heroL0 \
-  --visualize_channels
-```
-
-## Save a GIF
-
-`--save_gif` automatically enables the monitor:
-
-```bash
-python3 src/scenario_library/scripts/run_scenario.py \
-  <scenario.json> \
   --save_gif
 ```
 
@@ -97,129 +63,146 @@ Default output directory:
 ~/scenario_gifs/
 ```
 
-Custom output directory:
+The monitor can still be forced to a specific role or actor ID:
 
 ```bash
 python3 src/scenario_library/scripts/run_scenario.py \
   <scenario.json> \
-  --save_gif \
-  --gif_output_dir /path/to/results
+  --visualize_channels \
+  --visualized_role heroL0
 ```
-
-For a server without a desktop window:
 
 ```bash
 python3 src/scenario_library/scripts/run_scenario.py \
   <scenario.json> \
-  --save_gif \
-  --headless_channels
+  --visualize_channels \
+  --vehicle_id 123
 ```
 
-Stop the scenario with `Ctrl+C`. ROS shutdown closes the ffmpeg input pipe and finalizes the GIF.
+## CARLA real-scene panel
 
-## Run the monitor separately
+The first panel captures the actual `CarlaUE4` window. The node uses `xdotool` to locate that window by title and then captures it with `mss` or Pillow.
 
-After starting the scenario normally:
+Configuration:
+
+```yaml
+carla_window_title: "CarlaUE4"
+screen_auto_window: true
+screen_left: 0
+screen_top: 0
+screen_width: 1280
+screen_height: 720
+```
+
+The configured screen rectangle is only a fallback when the CARLA window cannot be detected automatically.
+
+Check the actual window title with:
 
 ```bash
-rosrun behavior_identification realtime_channel_visualizer.py
+xdotool search --name Carla getwindowname %@
 ```
 
-Example private parameters:
-
-```bash
-rosrun behavior_identification realtime_channel_visualizer.py \
-  _vehicle_id:=123 \
-  _save_gif:=true \
-  _gif_output_dir:=/tmp/channel_gifs
-```
-
-## Main ROS inputs
-
-```text
-/veh_state_sequences
-/carla/vehicle_config
-/traffic_light/phases
-/scenario_status
-/carla_waypoint_publisher/get_path
-```
-
-The route returned by `get_path` is frozen after target selection. Later abnormal lane-change replanning is not allowed to redefine the SL reference line.
-
-## Configuration
-
-Visualization settings:
+Then update `carla_window_title` in:
 
 ```text
 src/behavior_identification/config/realtime_channel_visualizer.yaml
 ```
 
-The launch file also loads:
+## Target selection
+
+Automatic mode is strict:
 
 ```text
-src/behavior_identification/config/behavior_identification.yaml
+VehicleConfig.is_random_behavior_vehicle == true
 ```
 
-This keeps speed thresholds in the monitor aligned with the identification node.
+The node no longer falls back to the first configured vehicle. Before the fixed reckless vehicle appears, the window stays on a static waiting screen.
 
-## Expected startup messages
-
-A successful target and route setup prints messages similar to:
+Expected log sequence:
 
 ```text
-Channel visualizer selected vehicle heroL0 (123), random=1
-Frozen expected path loaded for heroL0 (123): 240 points.
+Locked fixed reckless vehicle: heroL0 (123), random=1
+Target appeared in /veh_state_sequences; drawing and GIF start now.
+Frozen expected path loaded for heroL0.
 ```
 
-When GIF output is enabled:
+## Channel data
+
+The node subscribes to:
 
 ```text
-Channel GIF output: /home/user/scenario_gifs/<scenario>_<time>_channels.gif
+/carla/vehicle_config
+/veh_state_sequences
+/traffic_light/phases
+/scenario_status
+/carla_waypoint_publisher/get_path
 ```
+
+Each valid target-state update prints a throttled diagnostic line:
+
+```text
+Channel input heroL0(123): speed=8.412 accel=0.537 pose=120 speed_n=120 accel_n=120
+```
+
+This line is the first check when the plots appear empty or constant.
+
+The AT panel reads speed from `VehStateSequence.speed`. When that field is absent, it calculates speed from `VehStateSequence.twist`. The classifier already stores scalar longitudinal acceleration in `accel.linear.x`, so the visualization uses that value directly rather than projecting it by vehicle heading a second time.
+
+## SL definition
+
+SL uses the frozen initial route returned by the waypoint service:
+
+```text
+l(t) = (p(t) - p_r(s*))^T n(s*)
+Delta l(t) = l(t) - l_baseline
+```
+
+A normal curved intersection turn remains near zero, while a true road-relative lane shift produces a persistent change in `Delta l`.
 
 ## Troubleshooting
 
-### The Matplotlib window does not appear
+### The window remains on the waiting screen
 
-Check the display environment:
+Check the reckless-vehicle flag:
 
 ```bash
-echo $DISPLAY
-python3 -c "import matplotlib.pyplot as plt; plt.plot([0,1]); plt.show()"
+rostopic echo /carla/vehicle_config | grep -E "role_name|carla_id|is_random_behavior_vehicle"
 ```
 
-Use `--headless_channels --save_gif` on a machine without X11.
-
-### The SL panel says it is waiting for the route
-
-Check the route service:
+Check that the same ID appears in the state sequence:
 
 ```bash
-rosservice list | grep get_path
-rosservice info /carla_waypoint_publisher/get_path
-```
-
-Also verify that the selected target has published a `VehicleConfig` message.
-
-### No target vehicle is selected
-
-Inspect vehicle configurations and state IDs:
-
-```bash
-rostopic echo -n 1 /carla/vehicle_config
 rostopic echo -n 1 /veh_state_sequences
 ```
 
-Then pass `--vehicle_id` or `--visualized_role` explicitly.
+### The channel values remain zero
 
-### GIF is missing or empty
-
-Check ffmpeg and the output directory:
+Read the diagnostic line printed by the visualization node. Also inspect the selected actor directly:
 
 ```bash
-which ffmpeg
-ffmpeg -version
-ls -ld ~/scenario_gifs
+rostopic echo -n 1 /veh_state_sequences
+rostopic echo -n 1 /carla/objects
 ```
 
-Always stop through `Ctrl+C` or normal scenario completion so the GIF encoder can finalize the file.
+The title must show the expected reckless role and actor ID. The new version never silently selects the first vehicle.
+
+### The CARLA panel is blank
+
+```bash
+which xdotool
+xdotool search --name CarlaUE4 getwindowgeometry
+python3 -c "from PIL import ImageGrab; print('Pillow capture available')"
+```
+
+When the CARLA title differs, change `carla_window_title`. When automatic window detection is unavailable, set the fallback screen rectangle in the YAML file.
+
+### GIF is empty or incomplete
+
+Use `Ctrl+C` or normal scenario completion so ffmpeg receives EOF and finalizes the GIF:
+
+```bash
+ffmpeg -version
+ls -lh ~/scenario_gifs
+```
+
+The GIF starts only after the fixed reckless vehicle first appears in `/veh_state_sequences`.
