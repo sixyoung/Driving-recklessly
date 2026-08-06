@@ -1,5 +1,5 @@
 # One-row real-time visualization:
-# CARLA scene | ST channel | SL channel | AT channel
+# CARLA scene | ST speed channel | SL legal-route channel | AT acceleration channel
 update_hz: 10.0
 gif_fps: 5.0
 max_history_seconds: 45.0
@@ -9,6 +9,7 @@ show_window: true
 save_gif: false
 gif_output_dir: "~/scenario_gifs"
 ffmpeg_bin: "/usr/bin/ffmpeg"
+completion_status_grace_seconds: 3.0
 
 # Target selection. With vehicle_id=-1 and role_name="", the monitor waits
 # strictly for VehicleConfig.is_random_behavior_vehicle=true. There is no
@@ -26,15 +27,19 @@ screen_top: 0
 screen_width: 1280
 screen_height: 720
 
-# ST channel
-stop_line_lateral_gate: 8.0
-stop_line_cross_margin: 0.5
-
-# SL channel: Frenet lateral displacement relative to the frozen initial path.
-sl_lateral_limit: 1.5
-sl_baseline_samples: 10
-
-# AT channel
-max_accel: 3.0
-overspeed_threshold: 15.0
+# ST speed-time expected channel.
+# These values are also loaded from behavior_identification.yaml; the values
+# below document the monitor defaults.
 slow_speed_threshold: 6.0
+overspeed_threshold: 15.0
+
+# SL channel. The monitor constructs a union of legal candidate routes using
+# VehicleConfig.road_option and RandomBehavior.other_lanes. For a left-edge
+# lane the legal set is straight+left; for a right-edge lane it is
+# straight+right. A sample is abnormal only when it lies outside every route.
+sl_lateral_limit: 1.5
+sl_include_unknown_other_lanes: true
+sl_path_retry_interval: 0.5
+
+# AT acceleration-time expected channel.
+max_accel: 3.0
