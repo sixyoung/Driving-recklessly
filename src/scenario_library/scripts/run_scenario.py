@@ -13,8 +13,6 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PACKAGE_DIR = SCRIPT_DIR.parent
 WORKSPACE_DIR = PACKAGE_DIR.parent.parent
 
-# Keep the original deployment directories, while also supporting a cloned
-# workspace at any path.
 LEGACY_SCENARIO_DIRS = [
     Path("/home/bob/文档/备份/demo06/src/scenario_library/config/scenarios_more/速度异常随意驾驶辨识测试场景库"),
     Path("/home/bob/文档/备份/demo06/src/scenario_library/config/scenarios_more/加速度异常随意驾驶辨识测试场景库"),
@@ -31,6 +29,7 @@ VIDEO_FPS = 30
 VIDEO_SIZE = "1920x1080"
 DISPLAY_ID = ":1.0"
 FFMPEG_BIN = "/usr/bin/ffmpeg"
+ROS_SHUTDOWN_TIMEOUT = 25
 
 
 def bool_arg(value: bool) -> str:
@@ -49,7 +48,8 @@ def clean_old_processes() -> None:
         "passive_sync_stepper.py",
         "driver_model_manager_node",
         "road_side_system_node",
-        "realtime_channel_visualizer.py",
+        # Match row/expected monitor variants as well.
+        "realtime_channel_visualizer",
         "rostopic pub /carla/hero0/target_speed",
         "roslaunch scenario_library scenario_library.launch",
     ]
@@ -64,7 +64,6 @@ def clean_old_processes() -> None:
 
 
 def find_scenario_file(scenario_file: str):
-    """Resolve an absolute/relative scenario path or search configured roots."""
     supplied = Path(scenario_file).expanduser()
     if supplied.is_file():
         return supplied.resolve()
@@ -94,7 +93,6 @@ def find_scenario_file(scenario_file: str):
 
 
 def list_scenarios() -> None:
-    """List all JSON scenario files under the configured roots."""
     print("Available scenarios:\n")
     seen = set()
     for root in SCENARIO_ROOTS:
@@ -130,35 +128,30 @@ def show_remaining_processes() -> None:
 
 
 def start_recording(scenario_file: str):
-    """Record the configured X11 display to MP4."""
     VIDEO_SAVE_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    name = Path(scenario_file).stem
-    video_path = VIDEO_SAVE_DIR / f"{name}_{timestamp}.mp4"
-
+    video_path = VIDEO_SAVE_DIR / f"{Path(scenario_file).stem}_{timestamp}.mp4"
     print(f"[🎥] Start recording: {video_path}")
-    command = [
-        FFMPEG_BIN,
-        "-y",
-        "-video_size",
-        VIDEO_SIZE,
-        "-framerate",
-        str(VIDEO_FPS),
-        "-f",
-        "x11grab",
-        "-i",
-        DISPLAY_ID,
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-pix_fmt",
-        "yuv420p",
-        str(video_path),
-    ]
-
     process = subprocess.Popen(
-        command,
+        [
+            FFMPEG_BIN,
+            "-y",
+            "-video_size",
+            VIDEO_SIZE,
+            "-framerate",
+            str(VIDEO_FPS),
+            "-f",
+            "x11grab",
+            "-i",
+            DISPLAY_ID,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-pix_fmt",
+            "yuv420p",
+            str(video_path),
+        ],
         stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
         stderr=None,
@@ -179,19 +172,41 @@ def stop_recording(record_process, video_path) -> None:
                 record_process.stdin.write(b"q")
                 record_process.stdin.flush()
             record_process.wait(timeout=8)
-        except Exception as exc:  # ffmpeg can close stdin before q is written
+        except Exception as exc:
             print(f"[⚠️] Failed to stop ffmpeg by q: {exc}")
             try:
                 os.killpg(record_process.pid, signal.SIGINT)
                 record_process.wait(timeout=8)
             except subprocess.TimeoutExpired:
-                print("[⚠️] ffmpeg SIGINT timeout, sending SIGTERM...")
                 os.killpg(record_process.pid, signal.SIGTERM)
 
     if video_path and video_path.exists() and video_path.stat().st_size > 0:
         print(f"[✅] Video saved: {video_path}")
     else:
         print(f"[❌] Video was not created or is empty: {video_path}")
+
+
+def stop_roslaunch(process: subprocess.Popen) -> int:
+    """Stop roslaunch gracefully so visualization nodes can finalize GIFs."""
+    if process.poll() is not None:
+        return process.returncode
+
+    print("[GIF] Waiting for visualization nodes to finalize output...")
+    os.killpg(process.pid, signal.SIGINT)
+    try:
+        return process.wait(timeout=ROS_SHUTDOWN_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        print(
+            f"[⚠️] ROS launch did not stop after {ROS_SHUTDOWN_TIMEOUT}s; "
+            "sending SIGTERM..."
+        )
+        os.killpg(process.pid, signal.SIGTERM)
+        try:
+            return process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            print("[⚠️] ROS launch ignored SIGTERM; sending SIGKILL...")
+            os.killpg(process.pid, signal.SIGKILL)
+            return process.wait(timeout=5)
 
 
 def run_scenario(
@@ -207,7 +222,6 @@ def run_scenario(
     gif_output_dir: str = "~/scenario_gifs",
     show_channel_window: bool = True,
 ) -> int:
-    """Run one scenario and optionally start the four-panel channel monitor."""
     full_path = find_scenario_file(scenario_file)
     if full_path is None:
         print(f"[❌] Scenario file not found: {scenario_file}")
@@ -257,15 +271,9 @@ def run_scenario(
         process = subprocess.Popen(command, start_new_session=True)
         return_code = process.wait()
     except KeyboardInterrupt:
-        print("\n[🛑] Ctrl+C detected. Stopping scenario...")
-        if process and process.poll() is None:
-            os.killpg(process.pid, signal.SIGINT)
-            try:
-                return_code = process.wait(timeout=8)
-            except subprocess.TimeoutExpired:
-                print("[⚠️] ROS launch did not stop after SIGINT; sending SIGTERM...")
-                os.killpg(process.pid, signal.SIGTERM)
-                return_code = process.wait(timeout=5)
+        print("\n[🛑] Ctrl+C detected. Stopping scenario and finalizing GIF...")
+        if process is not None:
+            return_code = stop_roslaunch(process)
     finally:
         if record:
             stop_recording(record_process, video_path)
@@ -280,52 +288,40 @@ def run_scenario(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run CARLA scenarios with optional real-time ST/SL/AT channel visualization."
+        description="Run CARLA scenarios with optional real-time ST/SL/AT visualization."
     )
     parser.add_argument("scenario", nargs="?", help="Scenario JSON name or full path")
     parser.add_argument("--list", action="store_true", help="List available scenarios")
     parser.add_argument("--dynamic", action="store_true", help="Enable dynamic vehicle spawning")
     parser.add_argument("--max_vehicles", type=int, default=30, help="Maximum spawned vehicles")
     parser.add_argument(
-        "--random_role",
-        type=str,
-        default="",
+        "--random_role", type=str, default="",
         help="role_name of the vehicle that performs random behavior",
     )
-    parser.add_argument("--record", action="store_true", help="Record the X11 display to MP4")
-
+    parser.add_argument("--record", action="store_true", help="Record X11 display to MP4")
     parser.add_argument(
-        "--visualize_channels",
-        action="store_true",
-        help="Open the real-time Scenario/ST/SL/AT Matplotlib monitor",
+        "--visualize_channels", action="store_true",
+        help="Open the real-time CARLA/ST/SL/AT monitor",
     )
     parser.add_argument(
-        "--save_gif",
-        action="store_true",
-        help="Save the channel monitor as a GIF; also enables channel visualization",
+        "--save_gif", action="store_true",
+        help="Save the monitor as a GIF and enable visualization",
     )
     parser.add_argument(
-        "--vehicle_id",
-        type=int,
-        default=-1,
-        help="CARLA actor ID to visualize; default auto-selects the random-behavior vehicle",
+        "--vehicle_id", type=int, default=-1,
+        help="CARLA actor ID; default selects the random-behavior vehicle",
     )
     parser.add_argument(
-        "--visualized_role",
-        type=str,
-        default="",
+        "--visualized_role", type=str, default="",
         help="role_name to visualize; defaults to --random_role",
     )
     parser.add_argument(
-        "--gif_output_dir",
-        type=str,
-        default="~/scenario_gifs",
+        "--gif_output_dir", type=str, default="~/scenario_gifs",
         help="Directory for generated channel GIFs",
     )
     parser.add_argument(
-        "--headless_channels",
-        action="store_true",
-        help="Do not open a Matplotlib window; useful when only saving a GIF",
+        "--headless_channels", action="store_true",
+        help="Do not open a Matplotlib window; save GIF only",
     )
     return parser
 
