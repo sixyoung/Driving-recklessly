@@ -1,0 +1,45 @@
+<launch>
+  <!-- 启动 ScenarioExecutor 节点 -->
+
+  <arg name="scenario_path" default="$(find scenario_library)/config/scenarios/test_scenario_01.json" />
+  <arg name="dynamic_spawn_flag" default="false" />
+  <arg name="spawn_sensors_only" default="false" />
+  <arg name="max_vehicles" default="30" />
+  <arg name="random_behavior_role_name" default="" />
+
+  <arg name="host" default="localhost" />
+  <arg name="port" default="2000" />
+  <arg name="rate" default="50" />
+  <arg name="fixed_dt" default="0.02" />
+  <arg name="timeout" default="10" />
+  <arg name="tm_port" default="8000" />
+  <arg name="tm_sync" default="true" />
+  <arg name="no_restore" default="false" />
+  <arg name="passive" default="false"/>
+
+  <node name="scenario_executor" pkg="scenario_library" type="scenario_executor.py" output="screen">
+    <param name="scenario_path" value="$(arg scenario_path)" />
+    <param name="dynamic_spawn_flag" value="$(arg dynamic_spawn_flag)" />
+    <param name="spawn_sensors_only" value="$(arg spawn_sensors_only)" />
+    <param name="max_vehicles" value="$(arg max_vehicles)" />
+    <param name="random_behavior_role_name" value="$(arg random_behavior_role_name)" />
+  </node>
+
+  <node if="$(arg passive)" name="passive_sync_stepper" pkg="scenario_library" type="passive_sync_stepper.py" output="screen">
+    <param name="host" value="$(arg host)"/>
+    <param name="port" value="$(arg port)"/>
+    <param name="rate" value="$(arg rate)"/>
+    <param name="fixed_dt" value="$(arg fixed_dt)"/>
+    <param name="timeout" value="$(arg timeout)"/>
+    <param name="tm_port" value="$(arg tm_port)"/>
+    <param name="tm_sync" value="$(arg tm_sync)"/>
+    <param name="no_restore" value="$(arg no_restore)"/>
+    <param name="passive" value="$(arg passive)"/>
+  </node>
+
+  <node name="reckless_detection_listener"
+        pkg="scenario_library"
+        type="reckless_detection_listener.py"
+        output="screen" />
+        
+</launch>

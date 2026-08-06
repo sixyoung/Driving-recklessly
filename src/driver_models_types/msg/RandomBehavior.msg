@@ -1,0 +1,9 @@
+string type
+string scene_type
+string[] keys
+float64[] values
+geometry_msgs/Pose[] lane_change_point
+driver_models_types/LaneInfo[] other_lanes
+geometry_msgs/Pose[] change_speed_point
+geometry_msgs/Pose[] recovery_speed_point
+string[] ignored_vehicle_roles

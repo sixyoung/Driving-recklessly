@@ -1,0 +1,22 @@
+random_bt:
+  default:
+    v_slew_rate: 10
+  hero0:
+    events:
+      - name: "speeddown_20"
+        trigger_type: "distance_m"
+        start_at_m: 20.0        # ← 开始
+        end_at_m:   40.0        # ← 结束
+        target: 4.0
+        slew:   10
+        brake_ticks: 0
+        once: true
+
+      - name: "slowup_40"
+        trigger_type: "distance_m"
+        start_at_m: 60.0
+        end_at_m:   100.0
+        target: 15.0
+        slew:   10
+        brake_ticks: 0
+        once: true

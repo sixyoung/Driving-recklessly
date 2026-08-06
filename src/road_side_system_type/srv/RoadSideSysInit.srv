@@ -1,0 +1,4 @@
+# 请求部分：空（不需要任何参数）
+---
+PathInfo[] MapPathInfo                   # 路径信息
+RoadSideSysConfig RoadSideSysConfig       # 路侧系统配置信息

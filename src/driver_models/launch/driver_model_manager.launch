@@ -1,0 +1,16 @@
+<launch>
+    <arg name="Kp_longitudinal" default='0.206'/>
+    <arg name="Ki_longitudinal" default='0.0206'/>
+    <arg name="Kd_longitudinal" default='0.515'/>
+    <arg name="Kp_lateral" default='0.9'/>
+    <arg name="Ki_lateral" default='0.0'/>
+    <arg name="Kd_lateral" default='0.0'/>
+  <node pkg="driver_models" type="driver_model_manager_node" name="driver_model_manager_node" output="screen">
+    <param name="Kp_longitudinal" value='$(arg Kp_longitudinal)'/>
+    <param name="Ki_longitudinal" value='$(arg Ki_longitudinal)'/>
+    <param name="Kd_longitudinal" value='$(arg Kd_longitudinal)'/>
+    <param name="Kp_lateral" value='$(arg Kp_lateral)'/>
+    <param name="Ki_lateral" value='$(arg Ki_lateral)'/>
+    <param name="Kd_lateral" value='$(arg Kd_lateral)'/>
+  </node>
+</launch>

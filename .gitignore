@@ -1,0 +1,10 @@
+build/
+devel/
+scenario_videos/
+src/behavior_identification/plots/
+src/behavior_identification/runtime_results/
+/core
+/core.*
+*.core
+/libcarla/lib/*.a
+EOF

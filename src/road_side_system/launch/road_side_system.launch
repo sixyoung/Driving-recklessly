@@ -1,0 +1,10 @@
+<launch>
+  <!-- 启动交通灯发布节点 -->
+  <node pkg="road_side_system"
+        type="road_side_system_node"
+        name="road_side_system_node"
+        output="screen">
+    <!-- 可选参数，例如端口号、发布频率等 -->
+    <!-- <param name="update_rate" value="10.0" /> -->
+  </node>
+</launch>

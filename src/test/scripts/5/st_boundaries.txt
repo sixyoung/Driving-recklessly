@@ -1,0 +1,17 @@
+# Exported ST Boundaries, total=2
+Obstacle 2 index=0
+# Upper points (t, s)
+4 41
+8 41
+# Lower points (t, s)
+4 39
+8 39
+
+Obstacle 0 index=1
+# Upper points (t, s)
+0 32.25
+1.5 44.25
+# Lower points (t, s)
+0 27.75
+1.5 39.75
+

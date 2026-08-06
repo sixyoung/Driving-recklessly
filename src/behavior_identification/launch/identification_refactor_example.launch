@@ -1,0 +1,16 @@
+<launch>
+  <arg name="scenario_path" default=""/>
+
+  <node pkg="behavior_identification"
+        type="identification"
+        name="identification_node"
+        output="screen">
+
+    <!-- 统一加载配置参数。必须放在 node 内部，作为该节点的私有参数。 -->
+    <rosparam command="load"
+              file="$(find behavior_identification)/config/behavior_identification.yaml" />
+
+    <!-- 场景文件仍然可以由 launch 动态传入，会覆盖 YAML 里的 scene_file_path。 -->
+    <param name="scenario_file_path" value="$(arg scenario_path)"/>
+  </node>
+</launch>

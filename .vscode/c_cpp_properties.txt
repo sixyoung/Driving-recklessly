@@ -1,0 +1,51 @@
+{
+  "configurations": [
+      {
+          "browse": {
+              "databaseFilename": "${default}",
+              "limitSymbolsToIncludedHeaders": false
+          },
+          "includePath": [
+              "/opt/ros/noetic/include",
+              "/usr/include",
+              "${workspaceFolder}/libcarla/include/**",
+              "${workspaceFolder}/**",
+              "${workspaceFolder}/devel/include",
+
+              "${workspaceFolder}/src/driver/planner/include/common",
+              "${workspaceFolder}/src/driver/planner/include/frenet",
+              "${workspaceFolder}/src/driver/planner/include/path",
+              "${workspaceFolder}/src/driver/planner/include/polynomial",
+              "${workspaceFolder}/src/driver/planner/include/refrence_line",
+              "${workspaceFolder}/src/driver/planner/include/obstacle",
+              "${workspaceFolder}/src/driver/planner/include/spline",
+              "${workspaceFolder}/src/driver/planner/include/qp",
+              "${workspaceFolder}/src/driver/planner/include/em_planner",
+              "${workspaceFolder}/src/driver/planner/include/em_planner/**",
+
+              "${workspaceFolder}/src/common/include",
+              "${workspaceFolder}/src/common/include/**",
+              "${workspaceFolder}/src/driver_models/include",
+              "${workspaceFolder}/src/driver_models/include/**",
+              "${workspaceFolder}/src/local_planner/include",
+              "${workspaceFolder}/src/local_planner/include/**",
+              "${workspaceFolder}/src/road_side_system/include",
+              "${workspaceFolder}/src/road_side_system/include/**",
+              "${workspaceFolder}/src/speed_planner/include/speed_planner",
+              "${workspaceFolder}/src/speed_planner/include/speed_planner/**",
+
+              "/usr/include/eigen3",
+              "/home/hzq/miniconda3/envs/carla0.9.13/include/python3.8",
+              "/home/hzq/miniconda3/envs/carla0.9.13/lib/python3.8/site-packages/numpy/core/include"
+          ],
+          "name": "ROS",
+          "intelliSenseMode": "gcc-x64",
+          "compilerPath": "/usr/bin/gcc",
+          "cStandard": "gnu11",
+          "cppStandard": "c++17"
+      }
+  ],
+  "version": 4
+}
+
+

@@ -1,0 +1,7 @@
+string role_name                        # 车辆的角色名称
+geometry_msgs/Pose start                 # 起点
+geometry_msgs/Pose goal                 # 目标点
+---
+bool success  # Indicates if the operation was successful
+string message
+driver_models_types/PathWithOptions path  # 返回的路径

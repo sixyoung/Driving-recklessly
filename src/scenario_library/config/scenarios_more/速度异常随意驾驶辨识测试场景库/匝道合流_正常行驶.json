@@ -1,0 +1,197 @@
+{   
+    "map_name": "Town04",
+    "scene_type": "merge",
+    "observer_view": {
+      "x": -50, "y": -100, "z": 120.0,
+      "roll": 0.0, "pitch": -90.0, "yaw": 0.0
+    },
+    "objects": 
+    [
+        {
+            "name": "global_sensors",
+            "data":
+                [
+                    {
+                        "type": "sensor.pseudo.traffic_lights",
+                        "id": "traffic_lights"
+                    },
+                    {
+                        "type": "sensor.pseudo.objects",
+                        "id": "objects"
+                    },
+                    {
+                        "type": "sensor.pseudo.actor_list",
+                        "id": "actor_list"
+                    },
+                    {
+                        "type": "sensor.pseudo.markers",
+                        "id": "markers"
+                    },
+                    {
+                        "type": "sensor.pseudo.opendrive_map",
+                        "id": "map"
+                    }
+                ]
+        },
+        {
+            "name":"vehicle_sensors",
+            "data":
+                [
+                    {
+                        "type": "sensor.pseudo.tf",
+                        "id": "tf"
+                    },
+                    {
+                        "type": "sensor.pseudo.odom",
+                        "id": "odometry"
+                    },
+  
+                    {
+                        "type": "actor.pseudo.control",
+                        "id": "control"
+                    }
+                ]
+        },
+        {
+            "name": "driver_model",
+            "data":
+                [
+                    "auto_driver"
+                ]
+        },
+        {
+            "name":"vehicle_types",
+            "data":
+                [
+                    "vehicle.tesla.model3"
+                ]
+        },
+        {
+            "name": "cruise_speeds",
+            "data":
+                [
+                    5.0, 7.0
+                ]
+        },
+        {
+            "name": "vehicle_spawn_and_target_points_left",
+            "data":
+                [
+                   
+                ]
+        },
+        {
+            "name": "vehicle_spawn_and_target_points_right",
+            "data":
+                [
+                    {
+                        "spawn_point": {"x": -119.164993, "y": -49.829411, "z": 7.7, "roll": 0.0, "pitch": 356.027069, "yaw": -83.677765},
+                        "goal_point":{"x": -16, "y": 10, "z": 0.2, "roll": 0.0, "pitch": 0.0, "yaw": 0}
+                    }
+                ]
+        },
+        {
+            "name": "vehicle_spawn_and_target_points_up",
+            "data":
+                [
+                ]
+        },
+        {
+            "name": "vehicle_spawn_and_target_points_down",
+            "data":
+                [
+                    {
+                        "spawn_point": {"x": -16, "y": -180, "z": 0.2, "roll": 0.0, "pitch": 0.0, "yaw": -270},
+                        "goal_point":{"x": -16, "y": 10, "z": 0.2, "roll": 0.0, "pitch": 0.0, "yaw": -270}
+                    }
+                ]
+        },
+        {
+            "name":"vehicles",
+            "data":
+                [
+                    {
+                        "is_random_behavior_vehicle":true,
+                        "scene_class": "速度异常",
+                        "type": "vehicle.tesla.model3",
+                        "role_name": "hero0",
+                        "driver_model":"auto_driver",
+                        "cruise_speed":20.0,
+                        "spawn_point":{
+                            "spawn_point0":{"x": -111.6, "y": -72.3, "z": 8, "roll": 0.0, "pitch": -4.0, "yaw": -58.9},
+                            "spawn_point1":{"x": -114.9, "y": -65.8, "z":7, "roll": 0.0, "pitch": -4.0, "yaw": -66.5},
+                            "spawn_point2":{"x": -110.6, "y": -73.8, "z":7, "roll": 0.0, "pitch": -4.0, "yaw": -57.0}
+                        },
+                        "goal_point":{"x": -16.1, "y": -3.1, "z": 0.0, "roll": 0.0, "pitch": -0.0, "yaw": 89.8},
+                        "sensors": 
+                        [
+                            {
+                                "type": "sensor.pseudo.tf",
+                                "id": "tf"
+                            },
+                            {
+                                "type": "sensor.pseudo.odom",
+                                "id": "odometry"
+                            }
+                        ],
+                        "attributes":
+                        {
+                            "color": "0,255,0"
+                        },
+                        "random_behavior": {
+                            "type":"merge_onramp_over_speed_normol",
+                            "parameters":
+                            {
+                                "speed_abnormal":true, 
+                                "abnormal":true, 
+                                "scene_type":"merge_onramp_over_speed_normol",
+                                "merge_onramp_over_speed":true,
+                                "change_speed_point": {
+                                    "point0": {"x": -38.8, "y": -91.5, "z": 0.0, "roll": 0.0, "pitch": -0.8, "yaw": 32.2}
+                                },
+                                "speed_change_cruise_speed": 20,
+                                "speed_change_planning_upper_speed_limit": 20,
+                                "max_acceleration": 20.0,                              
+                                "max_deceleration": -5.0,
+                                "FLAGS_replan_longitudinal_distance_threshold": 10.0,
+                                "ignored_vehicle_roles": {
+                                    "hero3":"hero3"
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "type": "vehicle.tesla.model3",
+                        "role_name": "hero3",
+                        "driver_model":"auto_driver",
+                        "cruise_speed": 16.0,
+                        "spawn_point": {"x": -16.1, "y": -170, "z": 2.0, "roll": 0.0, "pitch": -0.0, "yaw": 89.8},
+                        "goal_point":{"x": -16.1, "y": -3.1, "z": 0.0, "roll": 0.0, "pitch": -0.0, "yaw": 89.8},
+                        "sensors": 
+                        [
+                            {
+                                "type": "sensor.pseudo.tf",
+                                "id": "tf"
+                            },
+                            {
+                                "type": "sensor.pseudo.odom",
+                                "id": "odometry"
+                            }
+                        ],
+                        "attributes":
+                        {
+                            "color": "0,0,0"
+                        },                        
+                        "random_behavior": {
+                            "type":"merge_onramp_over_speed",
+                            "parameters":
+                            {
+                                "FLAGS_replan_longitudinal_distance_threshold": 10.0,
+                                "safe_distance": 10.0
+                            }
+                        }
+                    }
+                ]
+        }             
+    ]
+}
