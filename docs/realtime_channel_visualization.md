@@ -6,70 +6,105 @@ The active node is:
 realtime_channel_visualizer_row.py
 ```
 
-It renders a wide, low horizontal layout:
+Layout:
 
 ```text
-CARLA scene | ST speed | SL lateral | AT acceleration
-             live behavior-identification result strip
+CARLA real scene | ST longitudinal-time | SL lateral | AT acceleration
+                  behavior-identification result strip
 ```
 
-The monitor waits for the fixed reckless-driving vehicle. Sampling starts only after that vehicle appears in `/veh_state_sequences`.
+## Channel definitions
 
-## Channel behavior
+### ST: longitudinal displacement-time channel
 
-### ST speed channel
-
-Default expected interval:
+ST is an S-T channel. Its axes are:
 
 ```text
-6.0 m/s <= speed <= 15.0 m/s
+x: time from target appearance (s)
+y: cumulative longitudinal displacement s (m)
 ```
 
-The initial low-speed period is not classified as abnormal. It is shown as a grey `Startup exemption` region. With the default configuration, low-speed evaluation begins only after five seconds and after the vehicle has reached the normal speed interval at least once.
-
-After activation, speed below the lower bound or above the upper bound is drawn as a thick red segment.
-
-### SL lateral channel
-
-For straight-road scenarios, the complete Frenet lateral-offset history is compared with:
+The configured speed bounds generate the lower and upper S-T envelope after
+the startup-exemption interval:
 
 ```text
--1.5 m <= lateral offset <= 1.5 m
+s_lower(t) = s_anchor + slow_speed_threshold * (t - t_anchor)
+s_upper(t) = s_anchor + overspeed_threshold * (t - t_anchor)
 ```
 
-Out-of-channel sections are drawn as thick red segments. Left- and right-turn scenarios currently display `NOT EVALUATED` to avoid false positives.
+The y-axis is not instantaneous speed. Current speed is shown only in the ST
+title as auxiliary information.
 
-### AT acceleration channel
+### SL: straight-road lateral channel
 
-Default expected interval:
+The target is projected onto its frozen planned route. The default legal band
+is `+-1.5 m`. SL is not evaluated for left/right-turn scenarios.
+
+### AT: acceleration-time channel
+
+The default legal band is `+-3.0 m/s^2`.
+
+## Abnormal highlighting
+
+All channels use the same visual rules:
+
+- expected corridor: light green;
+- normal trajectory: blue;
+- channel violation: thick red segment;
+- startup exemption: grey region.
+
+## Fonts
+
+The node selects fonts in this order:
+
+Chinese:
 
 ```text
--3.0 m/s² <= acceleration <= 3.0 m/s²
+SimSun / NSimSun / Songti SC / STSong / AR PL UMing CN /
+Noto Serif CJK SC / Source Han Serif SC
 ```
 
-Out-of-channel sections are drawn as thick red segments.
-
-## Behavior result strip
-
-The lower strip displays four live channel-based categories:
+Latin letters, numbers and symbols:
 
 ```text
-正常 | 速度异常 | 换道异常 | 加速度异常
+Times New Roman / Liberation Serif / Nimbus Roman
 ```
 
-An active anomaly is highlighted in red. `正常` is highlighted in green when no channel is abnormal. Results are held briefly to avoid flicker.
+Check available fonts:
 
-## Complete history and layout
+```bash
+fc-list | grep -Ei 'SimSun|Songti|STSong|UMing|Noto Serif CJK|Source Han Serif|Times New Roman|Liberation Serif|Nimbus Roman'
+```
 
-The monitor retains the complete trajectory from the target vehicle's first state until shutdown. The default canvas is:
+When no Song/Ming CJK font is found, the node prints a warning. Install a
+Song/Ming-style Chinese font before running again; do not rely on DejaVu Serif
+for Chinese text.
+
+## High-quality GIF encoding
+
+Frames are first written losslessly to:
 
 ```text
-2880 x 560
+<scenario>_<time>_channels.part.mkv
 ```
 
-The three channel plots receive more width than the CARLA scene pane. Set `keep_full_history: false` only when a rolling time window is explicitly required.
+On shutdown, ffmpeg builds a full 256-color palette and creates:
 
-## Pull, build, and run
+```text
+<scenario>_<time>_channels.part.gif
+```
+
+After successful conversion it is atomically renamed to:
+
+```text
+<scenario>_<time>_channels.gif
+```
+
+This two-stage process avoids the yellow/green edge contamination produced by
+direct low-quality GIF encoding. The ffmpeg processes use independent process
+groups, so roslaunch SIGINT cannot terminate them before finalization.
+
+## Pull and build
 
 ```bash
 git switch feature/realtime-channel-visualization
@@ -78,7 +113,7 @@ catkin_make
 source devel/setup.bash
 ```
 
-Run with a live window and animated GIF:
+## Run
 
 ```bash
 python3 src/scenario_library/scripts/run_scenario.py \
@@ -93,42 +128,25 @@ Default output directory:
 ~/scenario_gifs/
 ```
 
-## GIF finalization
-
-During recording, the encoder writes:
-
-```text
-<scenario>_<time>_channels.part.gif
-```
-
-This temporary name is expected while the scenario is running. ffmpeg now runs in an independent process group, so roslaunch `Ctrl+C` cannot terminate it prematurely. Press `Ctrl+C` once and wait for:
+Press `Ctrl+C` once. The launcher waits up to 180 seconds for lossless-video
+closure and palette conversion. Wait until both of these messages appear:
 
 ```text
-Finalizing animated GIF with ... frames...
+Finalizing high-quality animated GIF ...
 GIF saved: ..._channels.gif
 ```
 
-After a successful shutdown, the `.part.gif` is atomically renamed to the final `.gif`. At least two frames are written, so a successfully saved result is an animated GIF rather than a static image.
-
-## Main configuration
+## Main parameters
 
 ```yaml
-gif_width: 2880
-gif_height: 560
-keep_full_history: true
-max_history_seconds: 0.0
+gif_width: 3000
+gif_height: 620
 slow_speed_threshold: 6.0
 overspeed_threshold: 15.0
 speed_startup_grace_seconds: 5.0
 slow_require_previous_normal_speed: true
+max_position_step: 20.0
 sl_lateral_limit: 1.5
 max_accel: 3.0
 result_hold_seconds: 1.5
-```
-
-Configuration files:
-
-```text
-src/behavior_identification/config/realtime_channel_visualizer.yaml
-src/behavior_identification/config/behavior_identification.yaml
 ```
