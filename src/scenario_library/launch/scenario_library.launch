@@ -1,8 +1,7 @@
 <launch>
-  <!-- global parameter to set CARLA as time source -->
   <param name="use_sim_time" value="True"/>
 
-  <!-- launch a complete carla-ros-environment with an ad agent that steers the ego-vehicle -->
+  <!-- Driver controller parameters -->
   <arg name="Kp_longitudinal" default="0.6"/>
   <arg name="Ki_longitudinal" default="0.05"/>
   <arg name="Kd_longitudinal" default="0.02"/>
@@ -10,102 +9,119 @@
   <arg name="Ki_lateral" default="0.00"/>
   <arg name="Kd_lateral" default="0.00"/>
 
-  <!-- carla parameter -->
-  <arg name='host' default='localhost'/> <!-- host the carla server is running on -->
-  <arg name='port' default='2000'/> <!-- port of the carla server -->
-  <arg name="town" default="Map02"/> <!-- the carla town to load-->
-  <arg name='timeout' default='10'/> <!-- the carla timeout for server communication -->
-  <arg name='passive' default='True'/> <!-- enable/disable passive mode -->
-  <arg name='synchronous_mode_wait_for_vehicle_control_command' default='False'/><!-- should the ros bridge wait for a vehicle control command before proceeding with the next tick -->
-  <arg name='fixed_delta_seconds' default='0.0'/><!-- frequency of the carla ticks -->
-  <arg name='synchronous_mode' default='True'/>
+  <!-- CARLA parameters -->
+  <arg name="host" default="localhost"/>
+  <arg name="port" default="2000"/>
+  <arg name="town" default="Map02"/>
+  <arg name="timeout" default="10"/>
+  <arg name="passive" default="True"/>
+  <arg name="synchronous_mode_wait_for_vehicle_control_command" default="False"/>
+  <arg name="fixed_delta_seconds" default="0.0"/>
+  <arg name="synchronous_mode" default="True"/>
 
-  <!-- spectator camera parameter -->
-  <arg name="role_name" default="ego_vehicle"/> <!-- role name of the ego vehicle (used for identification in many nodes) -->
-  <arg name="target_speed" default="7.0"/> <!-- target speed in m/s that the agent tries to follow -->
+  <!-- Spectator/agent parameters -->
+  <arg name="role_name" default="ego_vehicle"/>
+  <arg name="target_speed" default="7.0"/>
 
-  <!-- scenario parameter -->
+  <!-- Scenario parameters -->
   <arg name="scenario_path" default="$(find scenario_library)/config/scenarios/test_scenario_01.json"/>
   <arg name="spawn_sensors_only" default="false"/>
   <arg name="dynamic_spawn_flag" default="false"/>
   <arg name="max_vehicles" default="30"/>
   <arg name="random_behavior_role_name" default=""/>
 
+  <!-- Real-time channel visualization parameters -->
+  <arg name="enable_channel_visualizer" default="false"/>
+  <arg name="save_channel_gif" default="false"/>
+  <arg name="show_channel_window" default="true"/>
+  <arg name="visualized_vehicle_id" default="-1"/>
+  <arg name="visualized_role_name" default=""/>
+  <arg name="channel_gif_output_dir" default="$(env HOME)/scenario_gifs"/>
 
-  <!-- ===================================================== -->
+  <!-- Publish target speed -->
+  <node pkg="rostopic"
+        type="rostopic"
+        name="hero0_target_speed"
+        args="pub /carla/hero0/target_speed std_msgs/Float64 $(arg target_speed)"/>
 
-  <!-- Publish the target speed -->
-  <node pkg="rostopic" type="rostopic" name="hero0_target_speed" args="pub /carla/hero0/target_speed std_msgs/Float64 $(arg target_speed)"/>
-
-  <!-- The ros bridge -->
+  <!-- CARLA bridge -->
   <include file="$(find carla_ros_bridge)/launch/carla_ros_bridge.launch">
-    <arg name='host' value='$(arg host)'/>
-    <arg name='port' value='$(arg port)'/>
-    <arg name='town' value='$(arg town)'/>
-    <arg name='timeout' value='$(arg timeout)'/>
-    <arg name='passive' value='$(arg passive)'/>
-    <arg name='synchronous_mode' value='$(arg synchronous_mode)'/>
-    <arg name='synchronous_mode_wait_for_vehicle_control_command' value='$(arg synchronous_mode_wait_for_vehicle_control_command)'/>
-    <arg name='fixed_delta_seconds' value='$(arg fixed_delta_seconds)'/>
+    <arg name="host" value="$(arg host)"/>
+    <arg name="port" value="$(arg port)"/>
+    <arg name="town" value="$(arg town)"/>
+    <arg name="timeout" value="$(arg timeout)"/>
+    <arg name="passive" value="$(arg passive)"/>
+    <arg name="synchronous_mode" value="$(arg synchronous_mode)"/>
+    <arg name="synchronous_mode_wait_for_vehicle_control_command"
+         value="$(arg synchronous_mode_wait_for_vehicle_control_command)"/>
+    <arg name="fixed_delta_seconds" value="$(arg fixed_delta_seconds)"/>
   </include>
 
-  <!-- Provide a route and access to the CARLA waypoint API (required by carla_ad_agent) -->
+  <!-- Route service -->
   <include file="$(find carla_waypoint_publisher)/launch/carla_waypoint_publisher.launch">
-    <arg name='host' value='$(arg host)'/>
-    <arg name='port' value='$(arg port)'/>
-    <arg name='timeout' value='$(arg timeout)'/>
-    <arg name='role_name' value='$(arg role_name)'/>
+    <arg name="host" value="$(arg host)"/>
+    <arg name="port" value="$(arg port)"/>
+    <arg name="timeout" value="$(arg timeout)"/>
+    <arg name="role_name" value="$(arg role_name)"/>
   </include>
 
-  <!-- The ad agent -->
+  <!-- Driver models -->
   <include file="$(find driver_models)/launch/driver_model_manager.launch">
-    <arg name="Kp_longitudinal" value='$(arg Kp_longitudinal)'/>
-    <arg name="Ki_longitudinal" value='$(arg Ki_longitudinal)'/>
-    <arg name="Kd_longitudinal" value='$(arg Kd_longitudinal)'/>
-    <arg name="Kp_lateral" value='$(arg Kp_lateral)'/>
-    <arg name="Ki_lateral" value='$(arg Ki_lateral)'/>
-    <arg name="Kd_lateral" value='$(arg Kd_lateral)'/>
+    <arg name="Kp_longitudinal" value="$(arg Kp_longitudinal)"/>
+    <arg name="Ki_longitudinal" value="$(arg Ki_longitudinal)"/>
+    <arg name="Kd_longitudinal" value="$(arg Kd_longitudinal)"/>
+    <arg name="Kp_lateral" value="$(arg Kp_lateral)"/>
+    <arg name="Ki_lateral" value="$(arg Ki_lateral)"/>
+    <arg name="Kd_lateral" value="$(arg Kd_lateral)"/>
   </include>
 
-  <!-- The scenario_executor -->
+  <!-- Scenario executor -->
   <include file="$(find scenario_library)/launch/scenario_executor.launch">
-    <arg name="scenario_path" value='$(arg scenario_path)'/>
-    <arg name="spawn_sensors_only" value='$(arg spawn_sensors_only)'/>
-    <arg name="dynamic_spawn_flag" value='$(arg dynamic_spawn_flag)'/>
-    <arg name="max_vehicles" value='$(arg max_vehicles)'/>
-    <arg name="random_behavior_role_name" value='$(arg random_behavior_role_name)'/>
+    <arg name="scenario_path" value="$(arg scenario_path)"/>
+    <arg name="spawn_sensors_only" value="$(arg spawn_sensors_only)"/>
+    <arg name="dynamic_spawn_flag" value="$(arg dynamic_spawn_flag)"/>
+    <arg name="max_vehicles" value="$(arg max_vehicles)"/>
+    <arg name="random_behavior_role_name" value="$(arg random_behavior_role_name)"/>
     <arg name="host" value="$(arg host)"/>
     <arg name="port" value="$(arg port)"/>
     <arg name="passive" value="$(arg passive)"/>
   </include>
-  
-  <!-- The road side system --> 
-  <include file="$(find road_side_system)/launch/road_side_system.launch">
-  </include>
 
-<!-- Behavior Identification nodes -->
+  <!-- Road-side system -->
+  <include file="$(find road_side_system)/launch/road_side_system.launch"/>
+
+  <!-- Behavior identification -->
   <node pkg="behavior_identification"
         type="car_state_classify"
         name="car_state_classify_node"
-        output="screen" />
+        output="screen"/>
 
-  <param name="/scenario_file_path" value="$(arg scenario_path)" />
-  <param name="/scene_file_path" value="$(arg scenario_path)" />
+  <param name="/scenario_file_path" value="$(arg scenario_path)"/>
+  <param name="/scene_file_path" value="$(arg scenario_path)"/>
 
   <node pkg="behavior_identification"
         type="identification"
         name="identification_node"
         output="screen">
-
-    <!-- 只加载固定配置参数，不负责场景文件路径 -->
     <rosparam command="load"
-              file="$(find behavior_identification)/config/behavior_identification.yaml" />
-
-    <!-- 场景路径仍然由 launch 动态传入 -->
-    <param name="scenario_file_path" value="$(arg scenario_path)" />
-    <param name="scene_file_path" value="$(arg scenario_path)" />
-
+              file="$(find behavior_identification)/config/behavior_identification.yaml"/>
+    <param name="scenario_file_path" value="$(arg scenario_path)"/>
+    <param name="scene_file_path" value="$(arg scenario_path)"/>
   </node>
 
-
-</launch> 
+  <!-- Optional real-time four-panel monitor -->
+  <node pkg="behavior_identification"
+        type="realtime_channel_visualizer.py"
+        name="realtime_channel_visualizer"
+        output="screen"
+        if="$(arg enable_channel_visualizer)">
+    <rosparam command="load"
+              file="$(find behavior_identification)/config/realtime_channel_visualizer.yaml"/>
+    <param name="scenario_path" value="$(arg scenario_path)"/>
+    <param name="save_gif" value="$(arg save_channel_gif)" type="bool"/>
+    <param name="show_window" value="$(arg show_channel_window)" type="bool"/>
+    <param name="vehicle_id" value="$(arg visualized_vehicle_id)" type="int"/>
+    <param name="role_name" value="$(arg visualized_role_name)"/>
+    <param name="gif_output_dir" value="$(arg channel_gif_output_dir)"/>
+  </node>
+</launch>
