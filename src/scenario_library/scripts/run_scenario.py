@@ -30,6 +30,7 @@ VIDEO_SIZE = "1920x1080"
 DISPLAY_ID = ":1.0"
 FFMPEG_BIN = "/usr/bin/ffmpeg"
 ROS_SHUTDOWN_TIMEOUT = 25
+MONITOR_START_TIMEOUT = 30
 
 
 def bool_arg(value: bool) -> str:
@@ -48,7 +49,6 @@ def clean_old_processes() -> None:
         "passive_sync_stepper.py",
         "driver_model_manager_node",
         "road_side_system_node",
-        # Match row/expected monitor variants as well.
         "realtime_channel_visualizer",
         "rostopic pub /carla/hero0/target_speed",
         "roslaunch scenario_library scenario_library.launch",
@@ -79,7 +79,9 @@ def find_scenario_file(scenario_file: str):
     matches = []
     for root in SCENARIO_ROOTS:
         if root.exists():
-            matches.extend(path.resolve() for path in root.rglob(basename) if path.is_file())
+            matches.extend(
+                path.resolve() for path in root.rglob(basename) if path.is_file()
+            )
 
     unique_matches = sorted(set(matches))
     if len(unique_matches) == 1:
@@ -187,11 +189,11 @@ def stop_recording(record_process, video_path) -> None:
 
 
 def stop_roslaunch(process: subprocess.Popen) -> int:
-    """Stop roslaunch gracefully so visualization nodes can finalize GIFs."""
+    """Stop roslaunch gracefully so the monitor can finalize its GIF."""
     if process.poll() is not None:
         return process.returncode
 
-    print("[GIF] Waiting for visualization nodes to finalize output...")
+    print("[GIF] Waiting for visualization node to finalize output...")
     os.killpg(process.pid, signal.SIGINT)
     try:
         return process.wait(timeout=ROS_SHUTDOWN_TIMEOUT)
@@ -207,6 +209,61 @@ def stop_roslaunch(process: subprocess.Popen) -> int:
             print("[⚠️] ROS launch ignored SIGTERM; sending SIGKILL...")
             os.killpg(process.pid, signal.SIGKILL)
             return process.wait(timeout=5)
+
+
+def rosnode_names():
+    result = subprocess.run(
+        ["rosnode", "list"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def wait_for_monitor_node(process: subprocess.Popen, timeout: float) -> bool:
+    """Fail loudly instead of silently running without the visualization node."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            return False
+        if "/realtime_channel_visualizer" in rosnode_names():
+            print("[✅] Channel monitor ROS node is running.")
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def gif_snapshot(output_dir: Path):
+    if not output_dir.exists():
+        return set()
+    return {path.resolve() for path in output_dir.glob("*_channels.gif")}
+
+
+def report_new_gifs(output_dir: Path, before) -> bool:
+    after = gif_snapshot(output_dir)
+    new_files = sorted(after - before, key=lambda path: path.stat().st_mtime)
+    valid = [path for path in new_files if path.stat().st_size > 0]
+    if valid:
+        for path in valid:
+            print(f"[✅] GIF saved: {path} ({path.stat().st_size / 1024:.1f} KiB)")
+        return True
+
+    partial = sorted(output_dir.glob("*.part.gif")) if output_dir.exists() else []
+    print("[❌] No new valid GIF was produced.")
+    if partial:
+        print("[诊断] Unfinished GIF files:")
+        for path in partial:
+            print(f"  - {path} ({path.stat().st_size} bytes)")
+    print("[诊断] Check monitor logs for:")
+    print("  Expected-channel monitor started")
+    print("  Target appeared in /veh_state_sequences")
+    print("  GIF encoder opened after first rendered frame")
+    print("  GIF saved")
+    return False
 
 
 def run_scenario(
@@ -231,15 +288,26 @@ def run_scenario(
         visualize_channels = True
 
     selected_role = visualized_role or random_role
-    expanded_gif_dir = str(Path(gif_output_dir).expanduser())
+    output_dir = Path(gif_output_dir).expanduser().resolve()
+    before_gifs = gif_snapshot(output_dir) if save_gif else set()
 
     print(f"[🚀] Running scenario: {full_path.name}")
     print(f"[📂] Full path: {full_path}")
     if visualize_channels:
-        target_text = f"ID={vehicle_id}" if vehicle_id >= 0 else (selected_role or "auto-select")
+        target_text = (
+            f"ID={vehicle_id}"
+            if vehicle_id >= 0
+            else selected_role or "auto-select reckless vehicle"
+        )
         print(f"[📈] Channel monitor enabled; target={target_text}")
+        print(
+            f"[🖥️] DISPLAY={os.environ.get('DISPLAY', '<unset>')}; "
+            f"show_window={show_channel_window}"
+        )
+        if show_channel_window and not os.environ.get("DISPLAY"):
+            print("[⚠️] DISPLAY is unset, so no live Matplotlib window can appear.")
         if save_gif:
-            print(f"[GIF] Output directory: {expanded_gif_dir}")
+            print(f"[GIF] Output directory: {output_dir}")
     print()
 
     command = [
@@ -255,7 +323,7 @@ def run_scenario(
         f"show_channel_window:={bool_arg(show_channel_window)}",
         f"visualized_vehicle_id:={vehicle_id}",
         f"visualized_role_name:={selected_role}",
-        f"channel_gif_output_dir:={expanded_gif_dir}",
+        f"channel_gif_output_dir:={output_dir}",
     ]
 
     process = None
@@ -269,7 +337,19 @@ def run_scenario(
             time.sleep(1.0)
 
         process = subprocess.Popen(command, start_new_session=True)
-        return_code = process.wait()
+
+        if visualize_channels and not wait_for_monitor_node(
+            process, MONITOR_START_TIMEOUT
+        ):
+            print("[❌] Channel monitor node did not start within 30 seconds.")
+            print("[修复] Run: catkin_make && source devel/setup.bash")
+            print(
+                "[检查] rosrun behavior_identification "
+                "realtime_channel_visualizer_row.py"
+            )
+            return_code = stop_roslaunch(process)
+        else:
+            return_code = process.wait()
     except KeyboardInterrupt:
         print("\n[🛑] Ctrl+C detected. Stopping scenario and finalizing GIF...")
         if process is not None:
@@ -277,6 +357,9 @@ def run_scenario(
     finally:
         if record:
             stop_recording(record_process, video_path)
+
+        if save_gif:
+            report_new_gifs(output_dir, before_gifs)
 
         print("\n[🧩] Final cleanup...")
         clean_old_processes()
