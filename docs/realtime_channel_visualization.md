@@ -1,50 +1,75 @@
 # Real-time expected-channel visualization
 
-The active monitor is a single self-contained ROS node:
+The active node is:
 
 ```text
 realtime_channel_visualizer_row.py
 ```
 
-It renders one horizontal row:
+It renders a wide, low horizontal layout:
 
 ```text
-CARLA real scene | ST speed channel | SL straight-road channel | AT acceleration channel
+CARLA scene | ST speed | SL lateral | AT acceleration
+             live behavior-identification result strip
 ```
 
-The monitor waits for the fixed vehicle whose `VehicleConfig.is_random_behavior_vehicle` is `true`. Sampling begins only after that vehicle appears in `/veh_state_sequences`.
+The monitor waits for the fixed reckless-driving vehicle. Sampling starts only after that vehicle appears in `/veh_state_sequences`.
 
-## Channel definitions
+## Channel behavior
 
-### ST: speed-time expected channel
+### ST speed channel
 
-```text
-slow_speed_threshold <= speed <= overspeed_threshold
-```
-
-Default:
+Default expected interval:
 
 ```text
 6.0 m/s <= speed <= 15.0 m/s
 ```
 
-### SL: straight-road lateral expected channel
+The initial low-speed period is not classified as abnormal. It is shown as a grey `Startup exemption` region. With the default configuration, low-speed evaluation begins only after five seconds and after the vehicle has reached the normal speed interval at least once.
 
-The vehicle is projected onto its frozen planned route. Default channel:
+After activation, speed below the lower bound or above the upper bound is drawn as a thick red segment.
+
+### SL lateral channel
+
+For straight-road scenarios, the complete Frenet lateral-offset history is compared with:
 
 ```text
 -1.5 m <= lateral offset <= 1.5 m
 ```
 
-SL is evaluated only for straight-road scenarios. For `road_option=1` or `road_option=2`, the panel displays `NOT EVALUATED`.
+Out-of-channel sections are drawn as thick red segments. Left- and right-turn scenarios currently display `NOT EVALUATED` to avoid false positives.
 
-### AT: acceleration-time expected channel
+### AT acceleration channel
+
+Default expected interval:
 
 ```text
 -3.0 m/s² <= acceleration <= 3.0 m/s²
 ```
 
-## Pull and build
+Out-of-channel sections are drawn as thick red segments.
+
+## Behavior result strip
+
+The lower strip displays four live channel-based categories:
+
+```text
+正常 | 速度异常 | 换道异常 | 加速度异常
+```
+
+An active anomaly is highlighted in red. `正常` is highlighted in green when no channel is abnormal. Results are held briefly to avoid flicker.
+
+## Complete history and layout
+
+The monitor retains the complete trajectory from the target vehicle's first state until shutdown. The default canvas is:
+
+```text
+2880 x 560
+```
+
+The three channel plots receive more width than the CARLA scene pane. Set `keep_full_history: false` only when a rolling time window is explicitly required.
+
+## Pull, build, and run
 
 ```bash
 git switch feature/realtime-channel-visualization
@@ -53,9 +78,7 @@ catkin_make
 source devel/setup.bash
 ```
 
-A rebuild is required after pulling because Catkin must refresh the installed Python node.
-
-## Run
+Run with a live window and animated GIF:
 
 ```bash
 python3 src/scenario_library/scripts/run_scenario.py \
@@ -64,68 +87,48 @@ python3 src/scenario_library/scripts/run_scenario.py \
   --save_gif
 ```
 
-Default GIF directory:
+Default output directory:
 
 ```text
 ~/scenario_gifs/
 ```
 
-The launcher now verifies that `/realtime_channel_visualizer` appears in `rosnode list`. If it does not start within 30 seconds, the scenario is stopped and an explicit build/source error is printed.
+## GIF finalization
 
-## GIF reliability
-
-The GIF encoder is opened only after the first complete Matplotlib frame has been rendered. Its input dimensions are taken from the actual canvas rather than assumed from the YAML values.
-
-Recording is first written to:
+During recording, the encoder writes:
 
 ```text
 <scenario>_<time>_channels.part.gif
 ```
 
-After ffmpeg exits successfully and at least one frame exists, it is atomically renamed to:
+This temporary name is expected while the scenario is running. ffmpeg now runs in an independent process group, so roslaunch `Ctrl+C` cannot terminate it prematurely. Press `Ctrl+C` once and wait for:
 
 ```text
-<scenario>_<time>_channels.gif
+Finalizing animated GIF with ... frames...
+GIF saved: ..._channels.gif
 ```
 
-A failed or zero-frame recording is deleted instead of leaving an empty GIF.
+After a successful shutdown, the `.part.gif` is atomically renamed to the final `.gif`. At least two frames are written, so a successfully saved result is an animated GIF rather than a static image.
 
-Expected logs:
+## Main configuration
 
-```text
-Expected-channel monitor started
-Channel monitor ROS node is running
-Target appeared in /veh_state_sequences
-GIF encoder opened after first rendered frame
-GIF recording active
-GIF saved
+```yaml
+gif_width: 2880
+gif_height: 560
+keep_full_history: true
+max_history_seconds: 0.0
+slow_speed_threshold: 6.0
+overspeed_threshold: 15.0
+speed_startup_grace_seconds: 5.0
+slow_require_previous_normal_speed: true
+sl_lateral_limit: 1.5
+max_accel: 3.0
+result_hold_seconds: 1.5
 ```
 
-## Stopping midway
-
-Press `Ctrl+C` once. The launcher sends `SIGINT` to roslaunch and waits up to 25 seconds for the visualization node and ffmpeg to finish. Do not repeatedly press `Ctrl+C` or force-close the terminal during this period.
-
-## Dependencies
-
-```bash
-sudo apt install python3-numpy python3-matplotlib python3-pil ffmpeg xdotool
-python3 -m pip install mss
-```
-
-`mss` is optional but recommended for faster CARLA-window capture.
-
-## Configuration
+Configuration files:
 
 ```text
 src/behavior_identification/config/realtime_channel_visualizer.yaml
 src/behavior_identification/config/behavior_identification.yaml
-```
-
-Main parameters:
-
-```yaml
-slow_speed_threshold: 6.0
-overspeed_threshold: 15.0
-sl_lateral_limit: 1.5
-max_accel: 3.0
 ```
