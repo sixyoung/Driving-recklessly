@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from collections import deque
 from pathlib import Path
@@ -102,7 +103,10 @@ class CarlaWindowCapture:
             values = dict(re.findall(r"^(X|Y|WIDTH|HEIGHT)=(-?\d+)$", result.stdout, re.M))
             if len(values) != 4:
                 return None
-            return tuple(int(values[key]) for key in ("X", "Y", "WIDTH", "HEIGHT"))
+            bbox = tuple(int(values[key]) for key in ("X", "Y", "WIDTH", "HEIGHT"))
+            if bbox[2] <= 0 or bbox[3] <= 0:
+                return None
+            return bbox
         except (OSError, subprocess.SubprocessError, ValueError):
             return None
 
@@ -137,22 +141,36 @@ class GifWriter:
             "-pix_fmt", "rgb24", "-s", f"{width}x{height}", "-r", str(fps),
             "-i", "-", "-vf", filters, "-loop", "0", str(path)
         ], stdin=subprocess.PIPE)
+        self.closed = False
 
     def write(self, frame: np.ndarray) -> None:
-        if self.process.stdin is not None:
+        if self.closed or self.process.stdin is None:
+            return
+        try:
             self.process.stdin.write(np.ascontiguousarray(frame).tobytes())
+        except (BrokenPipeError, OSError) as exc:
+            rospy.logerr_throttle(3.0, "GIF writer stopped: %s", exc)
+            self.close()
 
     def close(self) -> None:
-        if self.process.stdin is not None:
-            self.process.stdin.close()
+        if self.closed:
+            return
+        self.closed = True
         try:
+            if self.process.stdin is not None:
+                self.process.stdin.close()
             self.process.wait(timeout=20)
+        except (BrokenPipeError, OSError):
+            pass
         except subprocess.TimeoutExpired:
             self.process.terminate()
 
 
 class Monitor:
     def __init__(self) -> None:
+        self.lock = threading.RLock()
+        self.closed = False
+        self.node_start_wall = time.monotonic()
         self.hz = max(float(rospy.get_param("~update_hz", 10.0)), 1.0)
         self.gif_fps = max(float(rospy.get_param("~gif_fps", 5.0)), 1.0)
         self.width = max(int(rospy.get_param("~gif_width", 1920)), 960)
@@ -164,6 +182,8 @@ class Monitor:
             rospy.get_param("~gif_output_dir", "~/scenario_gifs"))))
         self.ffmpeg = str(rospy.get_param("~ffmpeg_bin", "/usr/bin/ffmpeg"))
         self.scenario_path = str(rospy.get_param("~scenario_path", "scenario"))
+        self.completion_grace = max(
+            float(rospy.get_param("~completion_status_grace_seconds", 3.0)), 0.0)
 
         self.requested_id = int(rospy.get_param("~vehicle_id", -1))
         self.requested_role = str(rospy.get_param("~role_name", ""))
@@ -209,6 +229,7 @@ class Monitor:
         self.fig.canvas.draw()
         if self.show and os.environ.get("DISPLAY"):
             plt.show(block=False)
+            plt.pause(0.05)
 
         self.path_client = rospy.ServiceProxy(self.path_service, PathWithOptionsService)
         rospy.Subscriber("/carla/vehicle_config", VehicleConfig, self.config_cb, queue_size=50)
@@ -237,66 +258,79 @@ class Monitor:
             or (self.requested_id < 0 and not self.requested_role and is_random))
         if not matches:
             return
-        if self.target_id == int(msg.carla_id) and self.target_config is not None:
-            return
-        self.target_id = int(msg.carla_id)
-        self.target_role = msg.role_name
-        self.target_config = msg
-        self.started = False
-        self.path = None
-        self.last_s = None
-        self.baseline = None
-        self.baseline_values.clear()
-        self.clear_data()
+        with self.lock:
+            if self.target_id == int(msg.carla_id) and self.target_config is not None:
+                return
+            self.target_id = int(msg.carla_id)
+            self.target_role = msg.role_name
+            self.target_config = msg
+            self.started = False
+            self.shutdown_requested = False
+            self.path = None
+            self.last_s = None
+            self.baseline = None
+            self.baseline_values.clear()
+            self.clear_data_no_lock()
         rospy.loginfo("Locked fixed reckless vehicle: %s (%d), random=%d",
                       msg.role_name, msg.carla_id, int(is_random))
 
     def state_cb(self, msg: VehStateSequenceArray) -> None:
-        if self.target_id is None:
-            rospy.loginfo_throttle(3.0,
+        with self.lock:
+            target_id = self.target_id
+        if target_id is None:
+            rospy.loginfo_throttle(
+                3.0,
                 "Receiving /veh_state_sequences with %d vehicles; waiting for random VehicleConfig.",
                 len(msg.vehicles))
             return
-        target = next((v for v in msg.vehicles if int(v.id) == self.target_id), None)
+        target = next((v for v in msg.vehicles if int(v.id) == target_id), None)
         if target is None or not target.pose:
-            rospy.logwarn_throttle(3.0, "Target %d not in state IDs: %s",
-                self.target_id, [int(v.id) for v in msg.vehicles])
+            rospy.logwarn_throttle(
+                3.0, "Target %d not in state IDs: %s",
+                target_id, [int(v.id) for v in msg.vehicles])
             return
 
-        stamp = msg.header.stamp.to_sec() or rospy.Time.now().to_sec()
-        if self.time and stamp <= self.time[-1]:
-            stamp = self.time[-1] + 1.0 / self.hz
-        speed = self.get_speed(target)
-        accel = self.get_accel(target, stamp, speed)
-        pose = target.pose[-1].position
-        lateral = float("nan")
-        stop_distance = float("nan")
-        stop_state = "inactive"
-        if self.path is not None:
-            s_value, raw_lateral = self.path.project(pose.x, pose.y, self.last_s)
-            self.last_s = s_value
-            if self.baseline is None:
-                self.baseline_values.append(raw_lateral)
-                if len(self.baseline_values) >= self.baseline_count:
-                    self.baseline = float(np.median(self.baseline_values))
-            if self.baseline is not None:
-                lateral = raw_lateral - self.baseline
-            stop_distance, stop_state = self.compute_stop(s_value)
+        with self.lock:
+            stamp = msg.header.stamp.to_sec() or rospy.Time.now().to_sec()
+            if self.time and stamp <= self.time[-1]:
+                stamp = self.time[-1] + 1.0 / self.hz
+            speed = self.get_speed(target)
+            accel = self.get_accel_no_lock(target, stamp, speed)
+            pose = target.pose[-1].position
+            lateral = float("nan")
+            stop_distance = float("nan")
+            stop_state = "inactive"
+            if self.path is not None:
+                s_value, raw_lateral = self.path.project(pose.x, pose.y, self.last_s)
+                self.last_s = s_value
+                if self.baseline is None:
+                    self.baseline_values.append(raw_lateral)
+                    if len(self.baseline_values) >= self.baseline_count:
+                        self.baseline = float(np.median(self.baseline_values))
+                if self.baseline is not None:
+                    lateral = raw_lateral - self.baseline
+                stop_distance, stop_state = self.compute_stop_no_lock(s_value)
 
-        if not self.started:
-            self.started = True
+            first_sample = not self.started
+            if first_sample:
+                self.started = True
+            self.time.append(stamp)
+            self.speed.append(speed)
+            self.accel.append(accel)
+            self.lateral.append(lateral)
+            self.stop_distance.append(stop_distance)
+            self.stop_state.append(stop_state)
+            self.prune_no_lock()
+            target_role = self.target_role
+            target_id = self.target_id
+
+        if first_sample:
             rospy.loginfo("Target appeared in /veh_state_sequences; drawing and GIF start now.")
             self.start_gif()
-        self.time.append(stamp)
-        self.speed.append(speed)
-        self.accel.append(accel)
-        self.lateral.append(lateral)
-        self.stop_distance.append(stop_distance)
-        self.stop_state.append(stop_state)
-        self.prune()
-        rospy.loginfo_throttle(2.0,
+        rospy.loginfo_throttle(
+            2.0,
             "Channel input %s(%d): speed=%.3f accel=%.3f pose=%d speed_n=%d accel_n=%d",
-            self.target_role, self.target_id, speed, accel,
+            target_role, target_id, speed, accel,
             len(target.pose), len(target.speed), len(target.accel))
 
     @staticmethod
@@ -310,7 +344,7 @@ class Monitor:
             return float(math.sqrt(v.x ** 2 + v.y ** 2 + v.z ** 2))
         return float("nan")
 
-    def get_accel(self, target, stamp: float, speed: float) -> float:
+    def get_accel_no_lock(self, target, stamp: float, speed: float) -> float:
         if target.accel:
             value = float(target.accel[-1].linear.x)
             if np.isfinite(value):
@@ -320,27 +354,35 @@ class Monitor:
         return float("nan")
 
     def ensure_path(self) -> None:
-        if self.path is not None or self.target_config is None:
-            return
-        if time.monotonic() - self.last_path_attempt < 1.0:
-            return
-        self.last_path_attempt = time.monotonic()
+        with self.lock:
+            if self.path is not None or self.target_config is None:
+                return
+            config = self.target_config
+            if time.monotonic() - self.last_path_attempt < 1.0:
+                return
+            self.last_path_attempt = time.monotonic()
         try:
             rospy.wait_for_service(self.path_service, timeout=0.25)
             request = PathWithOptionsServiceRequest()
-            request.role_name = self.target_config.role_name
-            request.start = self.target_config.spawn_point.pose
-            request.goal = self.target_config.goal_point.pose
+            request.role_name = config.role_name
+            request.start = config.spawn_point.pose
+            request.goal = config.goal_point.pose
             response = self.path_client(request)
             if response.success:
-                self.path = ReferencePath([
+                new_path = ReferencePath([
                     (wp.pose.position.x, wp.pose.position.y)
                     for wp in response.path.waypoints])
-                rospy.loginfo("Frozen expected path loaded for %s.", self.target_role)
+                with self.lock:
+                    if self.target_config is config:
+                        self.path = new_path
+                        self.last_s = None
+                rospy.loginfo("Frozen expected path loaded for %s.", config.role_name)
+            else:
+                rospy.logwarn_throttle(2.0, "Reference path request failed: %s", response.message)
         except (rospy.ROSException, rospy.ServiceException, ValueError) as exc:
             rospy.logwarn_throttle(2.0, "Waiting for expected path: %s", exc)
 
-    def compute_stop(self, vehicle_s: float):
+    def compute_stop_no_lock(self, vehicle_s: float):
         if self.path is None:
             return float("nan"), "inactive"
         best = None
@@ -355,56 +397,122 @@ class Monitor:
         return (float("nan"), "inactive") if best is None else (best[1], best[2])
 
     def light_cb(self, msg: TrafficLightPhaseArray) -> None:
-        self.lights = list(msg.phases)
+        with self.lock:
+            self.lights = list(msg.phases)
 
     def status_cb(self, msg: String) -> None:
-        text = msg.data.lower()
-        if any(token in text for token in ("finished", "completed", "ended", "结束")):
-            self.shutdown_requested = True
+        text = " ".join(msg.data.strip().lower().split())
+        with self.lock:
+            started = self.started
+        if not started:
+            rospy.loginfo_throttle(
+                5.0, "Ignore scenario status before target sampling starts: %s", msg.data)
+            return
+        if time.monotonic() - self.node_start_wall < self.completion_grace:
+            return
+        exact_end_states = {
+            "finished", "completed", "ended", "scenario_end", "scenario ended",
+            "scenario finished", "scenario completed", "结束", "场景结束",
+        }
+        if text in exact_end_states:
+            rospy.loginfo("Accepted scenario completion status: %s", msg.data)
+            with self.lock:
+                self.shutdown_requested = True
 
     def start_gif(self) -> None:
-        if not self.save_gif or self.gif is not None:
-            return
-        name = Path(self.scenario_path).stem or "scenario"
-        path = self.output_dir / f"{name}_{time.strftime('%Y%m%d_%H%M%S')}_channels.gif"
+        with self.lock:
+            if not self.save_gif or self.gif is not None:
+                return
+            name = Path(self.scenario_path).stem or "scenario"
+            path = self.output_dir / f"{name}_{time.strftime('%Y%m%d_%H%M%S')}_channels.gif"
         try:
-            self.gif = GifWriter(path, self.width, self.height, self.gif_fps, self.ffmpeg)
+            writer = GifWriter(path, self.width, self.height, self.gif_fps, self.ffmpeg)
+            with self.lock:
+                if self.gif is None:
+                    self.gif = writer
+                else:
+                    writer.close()
             rospy.loginfo("GIF recording started: %s", path)
         except OSError as exc:
             rospy.logerr("Cannot start GIF recording: %s", exc)
 
-    def clear_data(self) -> None:
-        for values in (self.time, self.speed, self.accel, self.lateral,
-                       self.stop_distance, self.stop_state):
+    def clear_data_no_lock(self) -> None:
+        for values in (
+                self.time, self.speed, self.accel, self.lateral,
+                self.stop_distance, self.stop_state):
             values.clear()
 
-    def prune(self) -> None:
+    def prune_no_lock(self) -> None:
         while len(self.time) > 2 and self.time[-1] - self.time[0] > self.max_seconds:
-            for values in (self.time, self.speed, self.accel, self.lateral,
-                           self.stop_distance, self.stop_state):
+            for values in (
+                    self.time, self.speed, self.accel, self.lateral,
+                    self.stop_distance, self.stop_state):
                 values.popleft()
 
-    def relative_time(self):
-        values = np.asarray(self.time, dtype=float)
-        return values - values[0]
+    def snapshot(self):
+        with self.lock:
+            if not self.started or not self.time:
+                return None
+            lengths = [
+                len(self.time), len(self.speed), len(self.accel),
+                len(self.lateral), len(self.stop_distance), len(self.stop_state)
+            ]
+            size = min(lengths)
+            if size <= 0:
+                return None
+            if len(set(lengths)) != 1:
+                rospy.logwarn_throttle(
+                    2.0, "Channel buffers temporarily differ in length: %s; using %d samples.",
+                    lengths, size)
+            times = np.asarray(list(self.time)[-size:], dtype=float)
+            return {
+                "t": times - times[0],
+                "speed": np.asarray(list(self.speed)[-size:], dtype=float),
+                "accel": np.asarray(list(self.accel)[-size:], dtype=float),
+                "lateral": np.asarray(list(self.lateral)[-size:], dtype=float),
+                "stop_distance": np.asarray(list(self.stop_distance)[-size:], dtype=float),
+                "stop_state": list(self.stop_state)[-size:],
+                "target_role": self.target_role,
+                "target_id": self.target_id,
+            }
 
     def draw(self) -> None:
-        if not self.started or not self.time:
+        data = self.snapshot()
+        if data is None:
+            self.pump_gui()
             return
-        t = self.relative_time()
-        self.draw_scene()
-        self.draw_st(t)
-        self.draw_sl(t)
-        self.draw_at(t)
-        self.fig.suptitle(f"Reckless vehicle: {self.target_role} / ID {self.target_id}")
-        self.fig.canvas.draw()
-        frame = np.asarray(self.fig.canvas.buffer_rgba())[:, :, :3].copy()
-        now = time.monotonic()
-        if self.gif is not None and now - self.last_gif_time >= 1.0 / self.gif_fps:
-            self.gif.write(frame)
-            self.last_gif_time = now
-        if self.show and os.environ.get("DISPLAY"):
+        try:
+            self.draw_scene()
+            self.draw_st(data["t"], data["stop_distance"], data["stop_state"])
+            self.draw_sl(data["t"], data["lateral"])
+            self.draw_at(data["t"], data["accel"], data["speed"])
+            self.fig.suptitle(
+                f"Reckless vehicle: {data['target_role']} / ID {data['target_id']}")
+            self.fig.canvas.draw()
+            frame = np.asarray(self.fig.canvas.buffer_rgba())[:, :, :3].copy()
+            now = time.monotonic()
+            with self.lock:
+                writer = self.gif
+            if writer is not None and now - self.last_gif_time >= 1.0 / self.gif_fps:
+                writer.write(frame)
+                self.last_gif_time = now
+        except Exception as exc:
+            rospy.logerr_throttle(
+                2.0, "Channel visualizer draw error (node kept alive): %s", exc)
+        finally:
+            self.pump_gui()
+
+    def pump_gui(self) -> None:
+        if not self.show or not os.environ.get("DISPLAY"):
+            return
+        try:
+            if not plt.fignum_exists(self.fig.number):
+                rospy.logwarn_throttle(3.0, "Visualization window was closed by the user.")
+                return
+            self.fig.canvas.flush_events()
             plt.pause(0.001)
+        except Exception as exc:
+            rospy.logwarn_throttle(3.0, "Matplotlib GUI event error: %s", exc)
 
     def draw_scene(self) -> None:
         self.ax_scene.clear()
@@ -415,45 +523,46 @@ class Monitor:
         if captured is not None:
             self.scene_frame = captured
         if self.scene_frame is None:
-            self.ax_scene.text(0.5, 0.5, "Waiting for CarlaUE4 window",
-                               ha="center", va="center", transform=self.ax_scene.transAxes)
+            self.ax_scene.text(
+                0.5, 0.5, "Waiting for CarlaUE4 window",
+                ha="center", va="center", transform=self.ax_scene.transAxes)
         else:
             self.ax_scene.imshow(self.scene_frame)
 
-    def draw_st(self, t) -> None:
+    def draw_st(self, t, values, states) -> None:
         self.ax_st.clear()
         self.ax_st.set_title("ST — stop-line distance")
         self.ax_st.set_xlabel("Time (s)")
         self.ax_st.set_ylabel("Distance (m)")
         self.ax_st.grid(True, linestyle="--", alpha=0.25)
         self.ax_st.axhline(0.0, linestyle="--", linewidth=1.0)
-        values = np.asarray(self.stop_distance, dtype=float)
         valid = np.isfinite(values)
         if np.any(valid):
             self.ax_st.plot(t[valid], values[valid], linewidth=2.0)
-            self.ax_st.set_title(f"ST — {self.stop_state[-1].upper()}")
+            self.ax_st.set_title(f"ST — {states[-1].upper()}")
         else:
-            self.ax_st.text(0.5, 0.5, "No active signal stop line",
-                            ha="center", va="center", transform=self.ax_st.transAxes)
+            self.ax_st.text(
+                0.5, 0.5, "No active signal stop line",
+                ha="center", va="center", transform=self.ax_st.transAxes)
 
-    def draw_sl(self, t) -> None:
+    def draw_sl(self, t, values) -> None:
         self.ax_sl.clear()
         self.ax_sl.set_title("SL — lateral shift")
         self.ax_sl.set_xlabel("Time (s)")
         self.ax_sl.set_ylabel(r"$\Delta l$ (m)")
         self.ax_sl.grid(True, linestyle="--", alpha=0.25)
         self.ax_sl.axhspan(-self.sl_limit, self.sl_limit, alpha=0.12)
-        values = np.asarray(self.lateral, dtype=float)
         valid = np.isfinite(values)
         if np.any(valid):
             self.ax_sl.plot(t[valid], values[valid], linewidth=2.0)
             self.ax_sl.set_title(
                 f"SL — {'VIOLATION' if abs(values[valid][-1]) > self.sl_limit else 'NORMAL'}")
         else:
-            self.ax_sl.text(0.5, 0.5, "Building path baseline",
-                            ha="center", va="center", transform=self.ax_sl.transAxes)
+            self.ax_sl.text(
+                0.5, 0.5, "Building path baseline",
+                ha="center", va="center", transform=self.ax_sl.transAxes)
 
-    def draw_at(self, t) -> None:
+    def draw_at(self, t, accel, speed) -> None:
         self.ax_at.clear()
         self.ax_speed.clear()
         self.ax_at.set_title("AT — acceleration / speed")
@@ -463,34 +572,50 @@ class Monitor:
         self.ax_at.grid(True, linestyle="--", alpha=0.25)
         self.ax_at.axhline(self.max_accel, linestyle="--", linewidth=1.0)
         self.ax_at.axhline(-self.max_accel, linestyle="--", linewidth=1.0)
-        accel = np.asarray(self.accel, dtype=float)
-        speed = np.asarray(self.speed, dtype=float)
+        self.ax_speed.axhline(self.max_speed, linestyle=":", linewidth=1.0)
         av = np.isfinite(accel)
         sv = np.isfinite(speed)
         lines, labels = [], []
         if np.any(av):
             line, = self.ax_at.plot(t[av], accel[av], linewidth=2.0)
-            lines.append(line); labels.append("Acceleration")
+            lines.append(line)
+            labels.append("Acceleration")
         if np.any(sv):
             line, = self.ax_speed.plot(t[sv], speed[sv], linestyle="-.", linewidth=1.8)
-            lines.append(line); labels.append("Speed")
+            lines.append(line)
+            labels.append("Speed")
         if lines:
             self.ax_at.legend(lines, labels, fontsize=7, loc="best")
 
     def close(self) -> None:
-        if self.gif is not None:
-            self.gif.close()
+        if self.closed:
+            return
+        self.closed = True
+        with self.lock:
+            writer = self.gif
             self.gif = None
-        plt.close(self.fig)
+        if writer is not None:
+            writer.close()
+        try:
+            plt.close(self.fig)
+        except Exception:
+            pass
 
     def spin(self) -> None:
         rate = rospy.Rate(self.hz)
         while not rospy.is_shutdown():
-            self.ensure_path()
-            self.draw()
-            if self.shutdown_requested:
-                rospy.signal_shutdown("scenario completed")
-                break
+            try:
+                self.ensure_path()
+                self.draw()
+                with self.lock:
+                    should_shutdown = self.shutdown_requested
+                if should_shutdown:
+                    rospy.signal_shutdown("scenario completed")
+                    break
+            except Exception as exc:
+                rospy.logerr_throttle(
+                    2.0, "Channel visualizer loop error (node kept alive): %s", exc)
+                self.pump_gui()
             rate.sleep()
 
 
