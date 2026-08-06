@@ -1,5 +1,5 @@
 # One-row real-time visualization:
-# CARLA scene | ST speed channel | SL legal-route channel | AT acceleration channel
+# CARLA scene | ST speed channel | SL straight-road channel | AT acceleration channel
 update_hz: 10.0
 gif_fps: 5.0
 max_history_seconds: 45.0
@@ -12,14 +12,12 @@ ffmpeg_bin: "/usr/bin/ffmpeg"
 completion_status_grace_seconds: 3.0
 
 # Target selection. With vehicle_id=-1 and role_name="", the monitor waits
-# strictly for VehicleConfig.is_random_behavior_vehicle=true. There is no
-# fallback to the first vehicle.
+# strictly for VehicleConfig.is_random_behavior_vehicle=true.
 vehicle_id: -1
 role_name: ""
 path_service: "/carla_waypoint_publisher/get_path"
 
-# Real CARLA window capture. xdotool is used to find the window by title.
-# When detection fails, the configured screen rectangle is captured.
+# Real CARLA window capture.
 carla_window_title: "CarlaUE4"
 screen_auto_window: true
 screen_left: 0
@@ -28,18 +26,13 @@ screen_width: 1280
 screen_height: 720
 
 # ST speed-time expected channel.
-# These values are also loaded from behavior_identification.yaml; the values
-# below document the monitor defaults.
 slow_speed_threshold: 6.0
 overspeed_threshold: 15.0
 
-# SL channel. The monitor constructs a union of legal candidate routes using
-# VehicleConfig.road_option and RandomBehavior.other_lanes. For a left-edge
-# lane the legal set is straight+left; for a right-edge lane it is
-# straight+right. A sample is abnormal only when it lies outside every route.
+# SL is evaluated only for straight-road scenarios. For road_option=1/2
+# (left/right turn), the panel remains visible but reports NOT EVALUATED.
 sl_lateral_limit: 1.5
-sl_include_unknown_other_lanes: true
-sl_path_retry_interval: 0.5
+sl_baseline_samples: 10
 
 # AT acceleration-time expected channel.
 max_accel: 3.0
