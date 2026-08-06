@@ -102,12 +102,13 @@
     <param name="scene_file_path" value="$(arg scenario_path)"/>
   </node>
 
-  <!-- One-row expected-channel monitor:
-       CARLA scene | ST speed | SL lateral | AT acceleration. -->
+  <!-- Single self-contained monitor:
+       CARLA scene | ST speed | SL straight-road lateral | AT acceleration. -->
   <node pkg="behavior_identification"
-        type="realtime_channel_visualizer_expected.py"
+        type="realtime_channel_visualizer_row.py"
         name="realtime_channel_visualizer"
         output="screen"
+        respawn="false"
         if="$(arg enable_channel_visualizer)">
     <rosparam command="load"
               file="$(find behavior_identification)/config/behavior_identification.yaml"/>
