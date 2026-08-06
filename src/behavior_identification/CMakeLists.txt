@@ -68,5 +68,6 @@ target_link_libraries(
 catkin_install_python(PROGRAMS
   scripts/realtime_channel_visualizer.py
   scripts/realtime_channel_visualizer_row.py
+  scripts/realtime_channel_visualizer_expected.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
