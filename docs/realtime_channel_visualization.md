@@ -1,46 +1,73 @@
-# Real-time CARLA / ST / SL / AT visualization
+# Real-time expected-channel visualization
 
-This branch adds a one-row visualization and GIF recorder:
+The optional monitor is arranged in one row:
 
 ```text
-| CARLA real scene | ST channel | SL channel | AT channel |
+CARLA real scene | ST speed channel | SL straight-road channel | AT acceleration channel
 ```
 
-The node does not start channel sampling immediately. It waits for the fixed vehicle whose `VehicleConfig.is_random_behavior_vehicle` field is `true`. It then waits until the same CARLA actor ID appears in `/veh_state_sequences`. Only after both conditions are satisfied does it:
+The monitor waits for the fixed vehicle whose `VehicleConfig.is_random_behavior_vehicle` is `true`. Sampling, drawing, and GIF recording begin only after that vehicle appears in `/veh_state_sequences`.
 
-- start the time axis;
-- draw the channel curves;
-- capture CARLA frames;
-- start writing GIF frames.
+## Channel definitions
 
-No blank waiting frames are written to the GIF.
+### ST: speed-time expected channel
+
+The actual speed curve is compared with the configured expected interval:
+
+```text
+slow_speed_threshold <= speed <= overspeed_threshold
+```
+
+Default bounds:
+
+```text
+6.0 m/s <= speed <= 15.0 m/s
+```
+
+Samples below the lower boundary are marked `TOO SLOW`; samples above the upper boundary are marked `TOO FAST`.
+
+### SL: straight-road lateral expected channel
+
+SL is currently evaluated only for straight-road scenarios. The vehicle position is projected onto the frozen planned route and the lateral offset is compared with:
+
+```text
+-sl_lateral_limit <= lateral offset <= sl_lateral_limit
+```
+
+Default limit:
+
+```text
+±1.5 m
+```
+
+For `road_option=1` or `road_option=2` (left/right turn), the SL panel remains visible but displays `NOT EVALUATED`. This avoids treating normal turning motion as an abnormal lane departure.
+
+### AT: acceleration-time expected channel
+
+The actual longitudinal acceleration is compared with:
+
+```text
+-max_accel <= acceleration <= max_accel
+```
+
+Default limit:
+
+```text
+±3.0 m/s²
+```
 
 ## Pull and build
 
 ```bash
 git switch feature/realtime-channel-visualization
 git pull --ff-only origin feature/realtime-channel-visualization
-
 catkin_make
 source devel/setup.bash
 ```
 
-Install the screen-capture dependencies:
-
-```bash
-sudo apt update
-sudo apt install python3-numpy python3-matplotlib python3-pil ffmpeg xdotool
-```
-
-`mss` is optional but faster than Pillow:
-
-```bash
-python3 -m pip install mss
-```
-
 ## Run
 
-Start CARLA first, then run:
+Live window:
 
 ```bash
 python3 src/scenario_library/scripts/run_scenario.py \
@@ -48,7 +75,7 @@ python3 src/scenario_library/scripts/run_scenario.py \
   --visualize_channels
 ```
 
-Save the one-row GIF:
+Live window and GIF:
 
 ```bash
 python3 src/scenario_library/scripts/run_scenario.py \
@@ -57,152 +84,28 @@ python3 src/scenario_library/scripts/run_scenario.py \
   --save_gif
 ```
 
-Default output directory:
+Default GIF directory:
 
 ```text
 ~/scenario_gifs/
 ```
 
-The monitor can still be forced to a specific role or actor ID:
+## Stopping midway
 
-```bash
-python3 src/scenario_library/scripts/run_scenario.py \
-  <scenario.json> \
-  --visualize_channels \
-  --visualized_role heroL0
-```
+Pressing `Ctrl+C` is supported. The visualization node handles `SIGINT` and `SIGTERM`, closes the ffmpeg input pipe, and finalizes the current GIF before exiting. Use the normal `Ctrl+C` path rather than closing the terminal or force-killing the process.
 
-```bash
-python3 src/scenario_library/scripts/run_scenario.py \
-  <scenario.json> \
-  --visualize_channels \
-  --vehicle_id 123
-```
-
-## CARLA real-scene panel
-
-The first panel captures the actual `CarlaUE4` window. The node uses `xdotool` to locate that window by title and then captures it with `mss` or Pillow.
-
-Configuration:
-
-```yaml
-carla_window_title: "CarlaUE4"
-screen_auto_window: true
-screen_left: 0
-screen_top: 0
-screen_width: 1280
-screen_height: 720
-```
-
-The configured screen rectangle is only a fallback when the CARLA window cannot be detected automatically.
-
-Check the actual window title with:
-
-```bash
-xdotool search --name Carla getwindowname %@
-```
-
-Then update `carla_window_title` in:
+## Configuration
 
 ```text
 src/behavior_identification/config/realtime_channel_visualizer.yaml
+src/behavior_identification/config/behavior_identification.yaml
 ```
 
-## Target selection
+The main parameters are:
 
-Automatic mode is strict:
-
-```text
-VehicleConfig.is_random_behavior_vehicle == true
+```yaml
+slow_speed_threshold: 6.0
+overspeed_threshold: 15.0
+sl_lateral_limit: 1.5
+max_accel: 3.0
 ```
-
-The node no longer falls back to the first configured vehicle. Before the fixed reckless vehicle appears, the window stays on a static waiting screen.
-
-Expected log sequence:
-
-```text
-Locked fixed reckless vehicle: heroL0 (123), random=1
-Target appeared in /veh_state_sequences; drawing and GIF start now.
-Frozen expected path loaded for heroL0.
-```
-
-## Channel data
-
-The node subscribes to:
-
-```text
-/carla/vehicle_config
-/veh_state_sequences
-/traffic_light/phases
-/scenario_status
-/carla_waypoint_publisher/get_path
-```
-
-Each valid target-state update prints a throttled diagnostic line:
-
-```text
-Channel input heroL0(123): speed=8.412 accel=0.537 pose=120 speed_n=120 accel_n=120
-```
-
-This line is the first check when the plots appear empty or constant.
-
-The AT panel reads speed from `VehStateSequence.speed`. When that field is absent, it calculates speed from `VehStateSequence.twist`. The classifier already stores scalar longitudinal acceleration in `accel.linear.x`, so the visualization uses that value directly rather than projecting it by vehicle heading a second time.
-
-## SL definition
-
-SL uses the frozen initial route returned by the waypoint service:
-
-```text
-l(t) = (p(t) - p_r(s*))^T n(s*)
-Delta l(t) = l(t) - l_baseline
-```
-
-A normal curved intersection turn remains near zero, while a true road-relative lane shift produces a persistent change in `Delta l`.
-
-## Troubleshooting
-
-### The window remains on the waiting screen
-
-Check the reckless-vehicle flag:
-
-```bash
-rostopic echo /carla/vehicle_config | grep -E "role_name|carla_id|is_random_behavior_vehicle"
-```
-
-Check that the same ID appears in the state sequence:
-
-```bash
-rostopic echo -n 1 /veh_state_sequences
-```
-
-### The channel values remain zero
-
-Read the diagnostic line printed by the visualization node. Also inspect the selected actor directly:
-
-```bash
-rostopic echo -n 1 /veh_state_sequences
-rostopic echo -n 1 /carla/objects
-```
-
-The title must show the expected reckless role and actor ID. The new version never silently selects the first vehicle.
-
-### The CARLA panel is blank
-
-```bash
-which xdotool
-xdotool search --name CarlaUE4 getwindowgeometry
-python3 -c "from PIL import ImageGrab; print('Pillow capture available')"
-```
-
-When the CARLA title differs, change `carla_window_title`. When automatic window detection is unavailable, set the fallback screen rectangle in the YAML file.
-
-### GIF is empty or incomplete
-
-Use `Ctrl+C` or normal scenario completion so ffmpeg receives EOF and finalizes the GIF:
-
-```bash
-ffmpeg -version
-ls -lh ~/scenario_gifs
-```
-
-The GIF starts only after the fixed reckless vehicle first appears in `/veh_state_sequences`.
