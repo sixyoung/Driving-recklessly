@@ -102,10 +102,10 @@
     <param name="scene_file_path" value="$(arg scenario_path)"/>
   </node>
 
-  <!-- Optional real-time four-panel monitor. It loads the identification
-       thresholds first, then monitor-specific display settings. -->
+  <!-- One-row monitor: CARLA scene | ST | SL | AT. It waits for the fixed
+       random-behavior vehicle and does not write blank GIF frames. -->
   <node pkg="behavior_identification"
-        type="realtime_channel_visualizer.py"
+        type="realtime_channel_visualizer_row.py"
         name="realtime_channel_visualizer"
         output="screen"
         if="$(arg enable_channel_visualizer)">
