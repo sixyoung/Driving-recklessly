@@ -1,23 +1,23 @@
-# One-row real-time visualization:
-# CARLA scene | ST speed | SL straight-road lateral | AT acceleration
+# Horizontal real-time visualization:
+# CARLA scene | ST longitudinal-time | SL straight-road lateral | AT acceleration
 update_hz: 10.0
 gif_fps: 5.0
 
-# Wider and lower canvas. Channel plots receive more width than the CARLA pane.
-gif_width: 2880
-gif_height: 560
+# Wider, lower canvas. The three channel plots receive most of the width.
+gif_width: 3000
+gif_height: 620
 show_window: true
 save_gif: false
 gif_output_dir: "~/scenario_gifs"
 ffmpeg_bin: "/usr/bin/ffmpeg"
 completion_status_grace_seconds: 3.0
 
-# Keep the complete trajectory from target appearance to scenario shutdown.
+# Keep the complete trajectory from target appearance to shutdown.
 keep_full_history: true
 max_history_seconds: 0.0
 
-# Target selection. With vehicle_id=-1 and role_name="", wait strictly for
-# VehicleConfig.is_random_behavior_vehicle=true (or a non-none random behavior).
+# Target selection. With vehicle_id=-1 and role_name="", wait for the fixed
+# VehicleConfig.is_random_behavior_vehicle=true vehicle.
 vehicle_id: -1
 role_name: ""
 path_service: "/carla_waypoint_publisher/get_path"
@@ -30,23 +30,26 @@ screen_top: 0
 screen_width: 1280
 screen_height: 720
 
-# ST speed-time expected channel.
+# ST: S-T longitudinal displacement channel. The y-axis is cumulative
+# longitudinal distance s, while these speeds generate the lower/upper S-T
+# envelope after startup exemption.
 slow_speed_threshold: 6.0
 overspeed_threshold: 15.0
-
-# Initial low speed is shown as a grey startup-exemption region. Low-speed
-# anomaly judgement starts only after this grace period and after the vehicle
-# has reached the normal speed interval at least once.
 speed_startup_grace_seconds: 5.0
 slow_require_previous_normal_speed: true
+max_position_step: 20.0
 
 # SL is evaluated only for straight-road scenarios. For road_option=1/2
-# (left/right turn), the panel remains visible but reports NOT EVALUATED.
+# the panel remains visible but reports NOT EVALUATED.
 sl_lateral_limit: 1.5
 sl_baseline_samples: 10
 
 # AT acceleration-time expected channel.
 max_accel: 3.0
 
-# Keep an abnormal result highlighted briefly after the latest violating sample.
+# Keep an abnormal result highlighted briefly after its latest violating sample.
 result_hold_seconds: 1.5
+
+# Font policy is implemented in the Python node:
+# Chinese: SimSun/Songti/STSong/AR PL UMing/Noto Serif CJK SC (first available)
+# Latin: Times New Roman, with Liberation Serif/Nimbus Roman fallback.
