@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""CARLA real scene and full-run ST/SL/AT expected-channel monitor.
+"""CARLA scene and full-run ST/SL/AT expected-channel visualization.
 
 Layout:
-    CARLA scene | ST speed | SL straight-road lateral | AT acceleration
-    live channel-based behavior classification strip
+    CARLA real scene | ST longitudinal-time | SL lateral | AT acceleration
+    channel-based behavior identification strip
 
-The monitor waits for the fixed reckless-driving vehicle. All channel samples
-are retained from the first target state until shutdown. GIF encoding starts
-after the first rendered frame and ffmpeg runs in an independent process group,
-so roslaunch SIGINT cannot kill the encoder before Python finalizes the file.
+ST is an S-T channel: x=time and y=longitudinal travelled distance. It is not
+an instantaneous speed plot. The expected S-T corridor is anchored when the
+startup exemption ends and is generated from the configured lower/upper speed
+bounds.
 """
 
 from __future__ import annotations
@@ -31,6 +31,8 @@ if not os.environ.get("DISPLAY"):
     matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
+from matplotlib import font_manager
+from matplotlib.font_manager import FontProperties
 import numpy as np
 import rospy
 from std_msgs.msg import String
@@ -50,20 +52,76 @@ except ImportError:
     ImageGrab = None
 
 
+def _find_font(candidates: Sequence[str]) -> Tuple[FontProperties, str, bool]:
+    entries = list(font_manager.fontManager.ttflist)
+    by_name = {entry.name.lower(): entry for entry in entries}
+    for candidate in candidates:
+        entry = by_name.get(candidate.lower())
+        if entry is not None:
+            return FontProperties(fname=entry.fname), entry.name, True
+    for candidate in candidates:
+        token = candidate.lower()
+        for entry in entries:
+            if token in entry.name.lower():
+                return FontProperties(fname=entry.fname), entry.name, True
+    fallback = font_manager.findfont("DejaVu Serif", fallback_to_default=True)
+    return FontProperties(fname=fallback), "DejaVu Serif", False
+
+
+CN_FONT, CN_FONT_NAME, CN_FONT_OK = _find_font(
+    (
+        "SimSun",
+        "NSimSun",
+        "Songti SC",
+        "STSong",
+        "AR PL UMing CN",
+        "Noto Serif CJK SC",
+        "Source Han Serif SC",
+        "Source Han Serif CN",
+    )
+)
+EN_FONT, EN_FONT_NAME, _ = _find_font(
+    ("Times New Roman", "Liberation Serif", "Nimbus Roman", "Times")
+)
+
+matplotlib.rcParams.update(
+    {
+        "font.family": EN_FONT_NAME,
+        "font.serif": [EN_FONT_NAME],
+        "mathtext.fontset": "stix",
+        "axes.unicode_minus": False,
+        "figure.facecolor": "white",
+        "axes.facecolor": "white",
+        "savefig.facecolor": "white",
+        "savefig.transparent": False,
+        "text.color": "#111827",
+        "axes.labelcolor": "#111827",
+        "axes.edgecolor": "#111827",
+        "xtick.color": "#111827",
+        "ytick.color": "#111827",
+    }
+)
+
+BLUE = "#2563eb"
+RED = "#dc2626"
+GREEN = "#16a34a"
+GREEN_FILL = "#dcfce7"
+GREY_FILL = "#e5e7eb"
+DARK = "#111827"
+
+
 class ReferencePath:
-    """Polyline reference path with signed Frenet lateral projection."""
+    """Polyline path with local signed Frenet projection."""
 
     def __init__(self, points: Sequence[Tuple[float, float]]) -> None:
         raw = np.asarray(points, dtype=np.float64)
         if raw.ndim != 2 or raw.shape[1] != 2 or len(raw) < 2:
-            raise ValueError("reference path must contain at least two 2-D points")
-
+            raise ValueError("reference path requires at least two 2-D points")
         delta = raw[1:] - raw[:-1]
         length = np.linalg.norm(delta, axis=1)
         valid = length > 1e-4
         if not np.any(valid):
-            raise ValueError("reference path contains no valid segment")
-
+            raise ValueError("reference path has no valid segment")
         self.starts = raw[:-1][valid]
         self.delta = delta[valid]
         self.length = length[valid]
@@ -72,19 +130,14 @@ class ReferencePath:
         self.segment_s = np.concatenate(([0.0], np.cumsum(self.length)))[:-1]
 
     def project(
-        self,
-        x: float,
-        y: float,
-        hint_s: Optional[float] = None,
-        search_radius: float = 35.0,
+        self, x: float, y: float, hint_s: Optional[float] = None
     ) -> Tuple[float, float]:
         point = np.asarray([x, y], dtype=np.float64)
         indices = np.arange(len(self.starts))
         if hint_s is not None and np.isfinite(hint_s):
-            mask = np.abs(self.segment_s - hint_s) <= max(search_radius, 1.0)
+            mask = np.abs(self.segment_s - hint_s) <= 35.0
             if np.any(mask):
                 indices = indices[mask]
-
         starts = self.starts[indices]
         delta = self.delta[indices]
         ratio = np.sum((point - starts) * delta, axis=1) / self.length_sq[indices]
@@ -92,7 +145,6 @@ class ReferencePath:
         projected = starts + ratio[:, None] * delta
         local_index = int(np.argmin(np.sum((point - projected) ** 2, axis=1)))
         segment_index = int(indices[local_index])
-
         tangent = self.tangent[segment_index]
         normal = np.asarray([-tangent[1], tangent[0]])
         lateral = float(np.dot(point - projected[local_index], normal))
@@ -104,7 +156,7 @@ class ReferencePath:
 
 
 class CarlaWindowCapture:
-    """Capture the CARLA window, falling back to a configured screen rectangle."""
+    """Capture CarlaUE4 by window title, with a fixed-rectangle fallback."""
 
     def __init__(self) -> None:
         self.title = str(rospy.get_param("~carla_window_title", "CarlaUE4"))
@@ -122,24 +174,24 @@ class CarlaWindowCapture:
             try:
                 self.mss_client = mss.mss()
             except Exception as exc:
-                rospy.logwarn("Unable to initialize mss capture: %s", exc)
+                rospy.logwarn("Unable to initialize mss: %s", exc)
 
-    def detect_window(self) -> Optional[Tuple[int, int, int, int]]:
+    def _detect_window(self) -> Optional[Tuple[int, int, int, int]]:
         if not self.auto_window or shutil.which("xdotool") is None:
             return None
         try:
-            search = subprocess.run(
+            found = subprocess.run(
                 ["xdotool", "search", "--name", self.title],
                 capture_output=True,
                 text=True,
                 timeout=1.0,
                 check=False,
             )
-            window_ids = [item for item in search.stdout.split() if item]
-            if not window_ids:
+            ids = [item for item in found.stdout.split() if item]
+            if not ids:
                 return None
             geometry = subprocess.run(
-                ["xdotool", "getwindowgeometry", "--shell", window_ids[-1]],
+                ["xdotool", "getwindowgeometry", "--shell", ids[-1]],
                 capture_output=True,
                 text=True,
                 timeout=1.0,
@@ -163,8 +215,7 @@ class CarlaWindowCapture:
         now = time.monotonic()
         if now - self.last_search >= 2.0:
             self.last_search = now
-            self.bbox = self.detect_window() or self.fallback
-
+            self.bbox = self._detect_window() or self.fallback
         left, top, width, height = self.bbox
         try:
             if self.mss_client is not None:
@@ -181,12 +232,12 @@ class CarlaWindowCapture:
                 )
                 return np.asarray(image.convert("RGB"))
         except Exception as exc:
-            rospy.logwarn_throttle(3.0, "CARLA window capture failed: %s", exc)
+            rospy.logwarn_throttle(3.0, "CARLA capture failed: %s", exc)
         return None
 
 
 class GifWriter:
-    """Stream an animated GIF and atomically rename it after a clean close."""
+    """Record lossless temporary video, then create a palette-optimized GIF."""
 
     def __init__(
         self,
@@ -197,15 +248,18 @@ class GifWriter:
         ffmpeg_bin: str,
     ) -> None:
         self.output_path = output_path
-        self.temp_path = output_path.with_name(output_path.stem + ".part.gif")
+        self.temp_video = output_path.with_name(output_path.stem + ".part.mkv")
+        self.temp_gif = output_path.with_name(output_path.stem + ".part.gif")
         self.width = int(width)
         self.height = int(height)
+        self.fps = float(fps)
+        self.ffmpeg_bin = ffmpeg_bin
         self.frame_count = 0
-        self.closed = False
         self.last_frame: Optional[np.ndarray] = None
-
+        self.closed = False
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        self._unlink(self.temp_path)
+        self._unlink(self.temp_video)
+        self._unlink(self.temp_gif)
 
         command = [
             ffmpeg_bin,
@@ -220,17 +274,19 @@ class GifWriter:
             "-video_size",
             f"{self.width}x{self.height}",
             "-framerate",
-            str(fps),
+            str(self.fps),
             "-i",
             "pipe:0",
             "-an",
-            "-loop",
-            "0",
-            "-gifflags",
-            "+transdiff",
-            "-f",
-            "gif",
-            str(self.temp_path),
+            "-c:v",
+            "ffv1",
+            "-level",
+            "3",
+            "-g",
+            "1",
+            "-pix_fmt",
+            "bgr0",
+            str(self.temp_video),
         ]
         self.process = subprocess.Popen(
             command,
@@ -255,7 +311,7 @@ class GifWriter:
         if rgb.shape != (self.height, self.width, 3):
             rospy.logerr_throttle(
                 2.0,
-                "Skip GIF frame shape %s; expected (%d, %d, 3)",
+                "Skip GIF frame %s; expected (%d, %d, 3)",
                 rgb.shape,
                 self.height,
                 self.width,
@@ -268,7 +324,7 @@ class GifWriter:
             self.frame_count += 1
             return True
         except (BrokenPipeError, OSError) as exc:
-            rospy.logerr_throttle(2.0, "GIF encoder pipe failed: %s", exc)
+            rospy.logerr_throttle(2.0, "GIF recording pipe failed: %s", exc)
             return False
 
     def close(self) -> Optional[Path]:
@@ -276,7 +332,6 @@ class GifWriter:
             return self.output_path if self.output_path.exists() else None
         if self.frame_count == 1 and self.last_frame is not None:
             self.write(self.last_frame)
-
         self.closed = True
         try:
             if self.process.stdin is not None:
@@ -285,51 +340,90 @@ class GifWriter:
             pass
 
         try:
-            return_code = self.process.wait(timeout=45)
+            record_code = self.process.wait(timeout=45)
         except subprocess.TimeoutExpired:
-            rospy.logwarn("GIF encoder did not finish in 45 s; sending SIGTERM.")
+            rospy.logwarn("Temporary GIF video did not close in 45 s; terminating.")
             try:
                 os.killpg(self.process.pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
-            try:
-                return_code = self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(self.process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                return_code = self.process.wait(timeout=5)
+            record_code = self.process.wait(timeout=5)
 
-        valid_file = (
-            return_code == 0
-            and self.frame_count >= 2
-            and self.temp_path.exists()
-            and self.temp_path.stat().st_size > 128
-        )
-        if valid_file:
-            os.replace(str(self.temp_path), str(self.output_path))
-            rospy.loginfo(
-                "GIF saved: %s (%d frames, %.1f KiB)",
-                self.output_path,
+        if (
+            record_code != 0
+            or self.frame_count < 2
+            or not self.temp_video.exists()
+            or self.temp_video.stat().st_size <= 128
+        ):
+            rospy.logerr(
+                "GIF recording failed: code=%s frames=%d temp_video=%s",
+                record_code,
                 self.frame_count,
-                self.output_path.stat().st_size / 1024.0,
+                self.temp_video,
             )
-            return self.output_path
+            self._unlink(self.temp_gif)
+            return None
 
-        rospy.logerr(
-            "GIF finalization failed: code=%s frames=%d temp=%s size=%d",
-            return_code,
-            self.frame_count,
-            self.temp_path,
-            self.temp_path.stat().st_size if self.temp_path.exists() else 0,
+        filter_graph = (
+            "[0:v]split[a][b];"
+            "[a]palettegen=stats_mode=full:reserve_transparent=0[p];"
+            "[b][p]paletteuse=dither=sierra2_4a"
         )
-        return None
+        convert_command = [
+            self.ffmpeg_bin,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(self.temp_video),
+            "-filter_complex",
+            filter_graph,
+            "-loop",
+            "0",
+            "-f",
+            "gif",
+            str(self.temp_gif),
+        ]
+        try:
+            converted = subprocess.run(
+                convert_command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                timeout=120,
+                check=False,
+                start_new_session=True,
+            )
+            error_text = converted.stderr.decode("utf-8", errors="replace").strip()
+        except subprocess.TimeoutExpired:
+            rospy.logerr("GIF palette conversion timed out after 120 s.")
+            return None
+
+        valid = (
+            converted.returncode == 0
+            and self.temp_gif.exists()
+            and self.temp_gif.stat().st_size > 128
+        )
+        if not valid:
+            rospy.logerr(
+                "GIF palette conversion failed: code=%s error=%s",
+                converted.returncode,
+                error_text or "no ffmpeg error text",
+            )
+            return None
+
+        os.replace(str(self.temp_gif), str(self.output_path))
+        self._unlink(self.temp_video)
+        rospy.loginfo(
+            "GIF saved: %s (%d frames, %.1f KiB)",
+            self.output_path,
+            self.frame_count,
+            self.output_path.stat().st_size / 1024.0,
+        )
+        return self.output_path
 
 
 class ExpectedChannelMonitor:
-    """Collect complete target history, draw channels, and classify behavior."""
-
     def __init__(self) -> None:
         self.lock = threading.RLock()
         self.closed = False
@@ -337,12 +431,8 @@ class ExpectedChannelMonitor:
 
         self.update_hz = max(float(rospy.get_param("~update_hz", 10.0)), 1.0)
         self.gif_fps = max(float(rospy.get_param("~gif_fps", 5.0)), 1.0)
-        self.figure_width = max(int(rospy.get_param("~gif_width", 2880)), 1600)
-        self.figure_height = max(int(rospy.get_param("~gif_height", 560)), 420)
-        self.keep_full_history = bool(rospy.get_param("~keep_full_history", True))
-        self.max_history_seconds = max(
-            float(rospy.get_param("~max_history_seconds", 0.0)), 0.0
-        )
+        self.figure_width = max(int(rospy.get_param("~gif_width", 3000)), 1600)
+        self.figure_height = max(int(rospy.get_param("~gif_height", 620)), 440)
         self.show_window = bool(rospy.get_param("~show_window", True))
         self.save_gif = bool(rospy.get_param("~save_gif", False))
         self.gif_output_dir = Path(
@@ -370,6 +460,9 @@ class ExpectedChannelMonitor:
         self.require_previous_normal_speed = bool(
             rospy.get_param("~slow_require_previous_normal_speed", True)
         )
+        self.max_position_step = max(
+            float(rospy.get_param("~max_position_step", 20.0)), 1.0
+        )
         self.sl_limit = abs(float(rospy.get_param("~sl_lateral_limit", 1.5)))
         self.baseline_sample_count = max(
             int(rospy.get_param("~sl_baseline_samples", 10)), 1
@@ -393,11 +486,14 @@ class ExpectedChannelMonitor:
         self.sl_mode_label = "waiting for vehicle configuration"
         self.reference_path: Optional[ReferencePath] = None
         self.last_path_attempt = 0.0
-        self.last_s: Optional[float] = None
+        self.last_path_s: Optional[float] = None
         self.baseline_values = []
         self.lateral_baseline: Optional[float] = None
 
+        self.last_position: Optional[Tuple[float, float]] = None
+        self.cumulative_distance = 0.0
         self.timestamps: Deque[float] = deque()
+        self.longitudinal_distances: Deque[float] = deque()
         self.speeds: Deque[float] = deque()
         self.accelerations: Deque[float] = deque()
         self.lateral_offsets: Deque[float] = deque()
@@ -407,7 +503,6 @@ class ExpectedChannelMonitor:
         self.scene_frame: Optional[np.ndarray] = None
         self.gif_writer: Optional[GifWriter] = None
         self.last_gif_frame_wall = -1e9
-
         self.last_speed_abnormal_wall = -1e9
         self.last_lane_abnormal_wall = -1e9
         self.last_accel_abnormal_wall = -1e9
@@ -416,30 +511,28 @@ class ExpectedChannelMonitor:
             plt.ion()
 
         self.fig = plt.figure(
-            figsize=(self.figure_width / 100.0, self.figure_height / 100.0),
-            dpi=100,
+            figsize=(self.figure_width / 100.0, self.figure_height / 100.0), dpi=100
         )
         grid = self.fig.add_gridspec(
             2,
             4,
-            height_ratios=[8.0, 1.25],
-            width_ratios=[0.85, 1.65, 1.65, 1.65],
-            hspace=0.18,
-            wspace=0.28,
+            height_ratios=[8.0, 1.35],
+            width_ratios=[0.82, 1.75, 1.65, 1.65],
+            hspace=0.20,
+            wspace=0.27,
         )
         self.ax_scene = self.fig.add_subplot(grid[0, 0])
         self.ax_st = self.fig.add_subplot(grid[0, 1])
         self.ax_sl = self.fig.add_subplot(grid[0, 2])
         self.ax_at = self.fig.add_subplot(grid[0, 3])
         self.ax_result = self.fig.add_subplot(grid[1, :])
-        self.fig.subplots_adjust(left=0.025, right=0.99, top=0.90, bottom=0.06)
+        self.fig.subplots_adjust(left=0.025, right=0.992, top=0.90, bottom=0.055)
         try:
             self.fig.canvas.manager.set_window_title("CARLA Expected Channels")
         except Exception:
             pass
         self.draw_waiting()
         self.fig.canvas.draw()
-
         if self.show_window and os.environ.get("DISPLAY"):
             plt.show(block=False)
             plt.pause(0.05)
@@ -460,25 +553,26 @@ class ExpectedChannelMonitor:
             queue_size=1,
         )
         rospy.Subscriber(
-            "/scenario_status",
-            String,
-            self.scenario_status_callback,
-            queue_size=10,
+            "/scenario_status", String, self.scenario_status_callback, queue_size=10
         )
         rospy.on_shutdown(self.close)
 
         rospy.loginfo(
-            "Expected-channel monitor started: show_window=%d save_gif=%d full_history=%d DISPLAY=%s",
+            "Expected-channel monitor started: CN font=%s, Latin font=%s, show=%d, gif=%d",
+            CN_FONT_NAME,
+            EN_FONT_NAME,
             int(self.show_window),
             int(self.save_gif),
-            int(self.keep_full_history),
-            os.environ.get("DISPLAY", "<unset>"),
         )
+        if not CN_FONT_OK:
+            rospy.logwarn(
+                "No Song/Ming CJK font found. Install fonts-noto-cjk or fonts-arphic-uming."
+            )
 
     def draw_waiting(self) -> None:
         titles = (
             "CARLA real scene",
-            "ST — speed expected channel",
+            "ST — longitudinal expected channel",
             "SL — straight-road lateral channel",
             "AT — acceleration expected channel",
         )
@@ -486,7 +580,7 @@ class ExpectedChannelMonitor:
             (self.ax_scene, self.ax_st, self.ax_sl, self.ax_at), titles
         ):
             axis.clear()
-            axis.set_title(title)
+            axis.set_title(title, fontproperties=EN_FONT)
             axis.set_xticks([])
             axis.set_yticks([])
             axis.text(
@@ -496,9 +590,10 @@ class ExpectedChannelMonitor:
                 ha="center",
                 va="center",
                 transform=axis.transAxes,
+                fontproperties=EN_FONT,
             )
         self.draw_result_bar(False, False, False, waiting=True)
-        self.fig.suptitle("Waiting — no channel sampling yet")
+        self.fig.suptitle("Waiting — no channel sampling yet", fontproperties=EN_FONT)
 
     @staticmethod
     def config_is_random(msg: VehicleConfig) -> bool:
@@ -507,9 +602,8 @@ class ExpectedChannelMonitor:
         return explicit or (bool(random_type) and random_type.lower() != "none")
 
     def target_matches(self, msg: VehicleConfig) -> bool:
-        vehicle_id = int(msg.carla_id)
         if self.requested_vehicle_id >= 0:
-            return vehicle_id == self.requested_vehicle_id
+            return int(msg.carla_id) == self.requested_vehicle_id
         if self.requested_role:
             return msg.role_name == self.requested_role
         return self.config_is_random(msg)
@@ -522,7 +616,6 @@ class ExpectedChannelMonitor:
             if self.target_id == vehicle_id and self.target_config is not None:
                 self.target_config = msg
                 return
-
             self.target_id = vehicle_id
             self.target_role = msg.role_name
             self.target_config = msg
@@ -531,17 +624,17 @@ class ExpectedChannelMonitor:
             self.shutdown_requested = False
             self.seen_normal_speed = False
             self.reference_path = None
-            self.last_s = None
+            self.last_path_s = None
             self.baseline_values = []
             self.lateral_baseline = None
+            self.last_position = None
+            self.cumulative_distance = 0.0
             self.clear_samples_no_lock()
             self.configure_sl_mode_no_lock(msg)
-
         rospy.loginfo(
-            "Locked reckless-driving vehicle: %s (%d), random=%d, SL=%s",
+            "Locked reckless vehicle: %s (%d), SL=%s",
             msg.role_name,
             msg.carla_id,
-            int(self.config_is_random(msg)),
             self.sl_mode_label,
         )
 
@@ -585,18 +678,11 @@ class ExpectedChannelMonitor:
                 len(msg.vehicles),
             )
             return
-
         target = next(
-            (vehicle for vehicle in msg.vehicles if int(vehicle.id) == target_id),
-            None,
+            (vehicle for vehicle in msg.vehicles if int(vehicle.id) == target_id), None
         )
         if target is None or not target.pose:
-            rospy.logwarn_throttle(
-                3.0,
-                "Target %d is absent from state IDs: %s",
-                target_id,
-                [int(vehicle.id) for vehicle in msg.vehicles],
-            )
+            rospy.logwarn_throttle(3.0, "Target %d is absent from state data.", target_id)
             return
 
         with self.lock:
@@ -615,13 +701,27 @@ class ExpectedChannelMonitor:
                 self.seen_normal_speed or not self.require_previous_normal_speed
             )
 
+            pose = target.pose[-1].position
+            current_position = (float(pose.x), float(pose.y))
+            if self.last_position is not None:
+                step = math.hypot(
+                    current_position[0] - self.last_position[0],
+                    current_position[1] - self.last_position[1],
+                )
+                if step <= self.max_position_step:
+                    self.cumulative_distance += step
+                else:
+                    rospy.logwarn_throttle(
+                        2.0, "Ignore implausible position jump %.2f m in ST channel.", step
+                    )
+            self.last_position = current_position
+
             lateral = float("nan")
             if self.sl_enabled and self.reference_path is not None:
-                pose = target.pose[-1].position
                 s_value, raw_lateral = self.reference_path.project(
-                    float(pose.x), float(pose.y), self.last_s
+                    current_position[0], current_position[1], self.last_path_s
                 )
-                self.last_s = s_value
+                self.last_path_s = s_value
                 if self.lateral_baseline is None:
                     self.baseline_values.append(raw_lateral)
                     if len(self.baseline_values) >= self.baseline_sample_count:
@@ -632,26 +732,26 @@ class ExpectedChannelMonitor:
             first_sample = not self.target_started
             self.target_started = True
             self.timestamps.append(stamp)
+            self.longitudinal_distances.append(self.cumulative_distance)
             self.speeds.append(speed)
             self.accelerations.append(acceleration)
             self.lateral_offsets.append(lateral)
             self.speed_evaluation_enabled.append(speed_eval)
-            self.prune_samples_no_lock()
             role_name = self.target_role
+            sample_count = len(self.timestamps)
 
         if first_sample:
-            rospy.loginfo(
-                "Target appeared in /veh_state_sequences; full-run drawing starts now."
-            )
+            rospy.loginfo("Target appeared; full-run channel drawing starts now.")
         rospy.loginfo_throttle(
             2.0,
-            "Channel input %s(%d): speed=%.3f accel=%.3f speed_eval=%d samples=%d",
+            "Channel input %s(%d): speed=%.3f accel=%.3f s=%.2f eval=%d samples=%d",
             role_name,
             target_id,
             speed,
             acceleration,
+            self.cumulative_distance,
             int(speed_eval),
-            len(self.timestamps),
+            sample_count,
         )
 
     @staticmethod
@@ -662,13 +762,7 @@ class ExpectedChannelMonitor:
                 return speed
         if target.twist:
             velocity = target.twist[-1].linear
-            return float(
-                math.sqrt(
-                    velocity.x * velocity.x
-                    + velocity.y * velocity.y
-                    + velocity.z * velocity.z
-                )
-            )
+            return float(math.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2))
         return float("nan")
 
     def extract_acceleration_no_lock(
@@ -689,13 +783,11 @@ class ExpectedChannelMonitor:
                 not self.sl_enabled
                 or self.reference_path is not None
                 or self.target_config is None
+                or time.monotonic() - self.last_path_attempt < 1.0
             ):
-                return
-            if time.monotonic() - self.last_path_attempt < 1.0:
                 return
             self.last_path_attempt = time.monotonic()
             config = self.target_config
-
         try:
             rospy.wait_for_service(self.path_service_name, timeout=0.25)
             request = PathWithOptionsServiceRequest()
@@ -704,9 +796,7 @@ class ExpectedChannelMonitor:
             request.goal = config.goal_point.pose
             response = self.path_client(request)
             if not response.success:
-                rospy.logwarn_throttle(
-                    2.0, "Reference path request failed: %s", response.message
-                )
+                rospy.logwarn_throttle(2.0, "Reference path failed: %s", response.message)
                 return
             path = ReferencePath(
                 [
@@ -717,7 +807,7 @@ class ExpectedChannelMonitor:
             with self.lock:
                 if self.target_config is config:
                     self.reference_path = path
-                    self.last_s = None
+                    self.last_path_s = None
                     self.baseline_values = []
                     self.lateral_baseline = None
             rospy.loginfo("Frozen straight reference path loaded for %s.", config.role_name)
@@ -741,13 +831,13 @@ class ExpectedChannelMonitor:
             "结束",
             "场景结束",
         }:
-            rospy.loginfo("Scenario completion accepted: %s", msg.data)
             with self.lock:
                 self.shutdown_requested = True
 
     def clear_samples_no_lock(self) -> None:
         for values in (
             self.timestamps,
+            self.longitudinal_distances,
             self.speeds,
             self.accelerations,
             self.lateral_offsets,
@@ -755,25 +845,13 @@ class ExpectedChannelMonitor:
         ):
             values.clear()
 
-    def prune_samples_no_lock(self) -> None:
-        if self.keep_full_history or self.max_history_seconds <= 0.0:
-            return
-        while (
-            len(self.timestamps) > 2
-            and self.timestamps[-1] - self.timestamps[0] > self.max_history_seconds
-        ):
-            self.timestamps.popleft()
-            self.speeds.popleft()
-            self.accelerations.popleft()
-            self.lateral_offsets.popleft()
-            self.speed_evaluation_enabled.popleft()
-
     def snapshot(self):
         with self.lock:
             if not self.target_started or not self.timestamps:
                 return None
             size = min(
                 len(self.timestamps),
+                len(self.longitudinal_distances),
                 len(self.speeds),
                 len(self.accelerations),
                 len(self.lateral_offsets),
@@ -782,6 +860,9 @@ class ExpectedChannelMonitor:
             timestamps = np.asarray(list(self.timestamps)[-size:], dtype=np.float64)
             return {
                 "time": timestamps - timestamps[0],
+                "distance": np.asarray(
+                    list(self.longitudinal_distances)[-size:], dtype=np.float64
+                ),
                 "speed": np.asarray(list(self.speeds)[-size:], dtype=np.float64),
                 "acceleration": np.asarray(
                     list(self.accelerations)[-size:], dtype=np.float64
@@ -808,20 +889,15 @@ class ExpectedChannelMonitor:
         label: str,
     ) -> None:
         axis.plot(
-            times[valid],
-            values[valid],
-            linewidth=1.6,
-            color="#2563eb",
-            label=label,
-            zorder=3,
+            times[valid], values[valid], linewidth=1.7, color=BLUE, label=label, zorder=3
         )
         if np.any(abnormal):
             masked = np.ma.masked_where(~abnormal, values)
             axis.plot(
                 times,
                 masked,
-                linewidth=4.0,
-                color="#dc2626",
+                linewidth=4.2,
+                color=RED,
                 solid_capstyle="round",
                 label="Outside expected channel",
                 zorder=6,
@@ -829,7 +905,8 @@ class ExpectedChannelMonitor:
 
     def draw_scene(self) -> None:
         self.ax_scene.clear()
-        self.ax_scene.set_title("CARLA real scene")
+        self.ax_scene.set_facecolor("white")
+        self.ax_scene.set_title("CARLA real scene", fontproperties=EN_FONT)
         self.ax_scene.set_xticks([])
         self.ax_scene.set_yticks([])
         captured = self.scene_capture.grab()
@@ -843,6 +920,7 @@ class ExpectedChannelMonitor:
                 ha="center",
                 va="center",
                 transform=self.ax_scene.transAxes,
+                fontproperties=EN_FONT,
             )
         else:
             self.ax_scene.imshow(self.scene_frame)
@@ -850,26 +928,20 @@ class ExpectedChannelMonitor:
     def draw_st(
         self,
         times: np.ndarray,
+        distance: np.ndarray,
         speed: np.ndarray,
         evaluation_enabled: np.ndarray,
     ) -> bool:
+        """Draw S-T channel: time versus longitudinal travelled distance."""
         self.ax_st.clear()
-        self.ax_st.set_xlabel("Time from target appearance (s)")
-        self.ax_st.set_ylabel("Speed (m/s)")
-        self.ax_st.grid(True, linestyle="--", alpha=0.25)
-        self.ax_st.axhspan(
-            self.min_speed,
-            self.max_speed,
-            alpha=0.14,
-            color="#22c55e",
-            label="Expected speed channel",
-        )
-        self.ax_st.axhline(self.min_speed, linestyle="--", linewidth=1.1)
-        self.ax_st.axhline(self.max_speed, linestyle="--", linewidth=1.1)
+        self.ax_st.set_facecolor("white")
+        self.ax_st.set_xlabel("Time from target appearance (s)", fontproperties=EN_FONT)
+        self.ax_st.set_ylabel("Longitudinal displacement s (m)", fontproperties=EN_FONT)
+        self.ax_st.grid(True, linestyle="--", alpha=0.22)
 
-        valid = np.isfinite(speed)
+        valid = np.isfinite(distance)
         if not np.any(valid):
-            self.ax_st.set_title("ST — waiting for speed")
+            self.ax_st.set_title("ST — waiting for displacement", fontproperties=EN_FONT)
             return False
 
         exempt = valid & ~evaluation_enabled
@@ -878,31 +950,57 @@ class ExpectedChannelMonitor:
             self.ax_st.axvspan(
                 0.0,
                 startup_end,
-                alpha=0.20,
-                color="#9ca3af",
+                alpha=0.28,
+                color=GREY_FILL,
                 label="Startup exemption",
                 zorder=0,
             )
 
-        too_slow = valid & evaluation_enabled & (speed < self.min_speed)
-        too_fast = valid & evaluation_enabled & (speed > self.max_speed)
-        abnormal = too_slow | too_fast
-        self.plot_abnormal_overlay(
-            self.ax_st, times, speed, valid, abnormal, "Actual speed"
-        )
+        eval_indices = np.where(valid & evaluation_enabled)[0]
+        abnormal = np.zeros_like(valid, dtype=bool)
+        lower = np.full_like(distance, np.nan, dtype=np.float64)
+        upper = np.full_like(distance, np.nan, dtype=np.float64)
+        if eval_indices.size:
+            anchor_index = int(eval_indices[0])
+            dt = times - times[anchor_index]
+            active = valid & evaluation_enabled & (dt >= 0.0)
+            lower[active] = distance[anchor_index] + self.min_speed * dt[active]
+            upper[active] = distance[anchor_index] + self.max_speed * dt[active]
+            self.ax_st.fill_between(
+                times[active],
+                lower[active],
+                upper[active],
+                color=GREEN_FILL,
+                alpha=0.82,
+                label="Expected S-T channel",
+                zorder=0,
+            )
+            self.ax_st.plot(times[active], lower[active], "--", linewidth=1.1, color=GREEN)
+            self.ax_st.plot(times[active], upper[active], "--", linewidth=1.1, color=GREEN)
+            abnormal = active & ((distance < lower) | (distance > upper))
 
+        self.plot_abnormal_overlay(
+            self.ax_st, times, distance, valid, abnormal, "Actual longitudinal progress"
+        )
         current_index = int(np.where(valid)[0][-1])
-        current = float(speed[current_index])
         if not bool(evaluation_enabled[current_index]):
             state = "STARTUP EXEMPT"
-        elif current < self.min_speed:
-            state = "TOO SLOW"
-        elif current > self.max_speed:
-            state = "TOO FAST"
+        elif (
+            abnormal[current_index]
+            and np.isfinite(lower[current_index])
+            and distance[current_index] < lower[current_index]
+        ):
+            state = "PROGRESS TOO SLOW"
+        elif abnormal[current_index]:
+            state = "PROGRESS TOO FAST"
         else:
             state = "NORMAL"
-        self.ax_st.set_title(f"ST — {state} ({current:.2f} m/s)")
-        self.ax_st.legend(loc="best", fontsize=7)
+        current_speed = speed[current_index] if np.isfinite(speed[current_index]) else float("nan")
+        self.ax_st.set_title(
+            f"ST — {state} (s={distance[current_index]:.1f} m, v={current_speed:.2f} m/s)",
+            fontproperties=EN_FONT,
+        )
+        self.ax_st.legend(loc="best", fontsize=7, prop=EN_FONT)
         return bool(abnormal[current_index])
 
     def draw_sl(
@@ -913,11 +1011,12 @@ class ExpectedChannelMonitor:
         mode_label: str,
     ) -> bool:
         self.ax_sl.clear()
-        self.ax_sl.set_xlabel("Time from target appearance (s)")
-        self.ax_sl.set_ylabel(r"Lateral offset $\Delta l$ (m)")
-        self.ax_sl.grid(True, linestyle="--", alpha=0.25)
+        self.ax_sl.set_facecolor("white")
+        self.ax_sl.set_xlabel("Time from target appearance (s)", fontproperties=EN_FONT)
+        self.ax_sl.set_ylabel(r"Lateral offset $\Delta l$ (m)", fontproperties=EN_FONT)
+        self.ax_sl.grid(True, linestyle="--", alpha=0.22)
         if not enabled:
-            self.ax_sl.set_title("SL — NOT EVALUATED")
+            self.ax_sl.set_title("SL — NOT EVALUATED", fontproperties=EN_FONT)
             self.ax_sl.text(
                 0.5,
                 0.5,
@@ -925,62 +1024,64 @@ class ExpectedChannelMonitor:
                 ha="center",
                 va="center",
                 transform=self.ax_sl.transAxes,
+                fontproperties=EN_FONT,
             )
             return False
-
         self.ax_sl.axhspan(
             -self.sl_limit,
             self.sl_limit,
-            alpha=0.14,
-            color="#22c55e",
+            color=GREEN_FILL,
+            alpha=0.82,
             label="Expected straight-road channel",
         )
-        self.ax_sl.axhline(self.sl_limit, linestyle="--", linewidth=1.1)
-        self.ax_sl.axhline(-self.sl_limit, linestyle="--", linewidth=1.1)
+        self.ax_sl.axhline(self.sl_limit, linestyle="--", linewidth=1.1, color=GREEN)
+        self.ax_sl.axhline(-self.sl_limit, linestyle="--", linewidth=1.1, color=GREEN)
         valid = np.isfinite(lateral)
         if not np.any(valid):
-            self.ax_sl.set_title("SL — building straight-route baseline")
+            self.ax_sl.set_title("SL — building route baseline", fontproperties=EN_FONT)
             return False
-
         abnormal = valid & (np.abs(lateral) > self.sl_limit)
         self.plot_abnormal_overlay(
             self.ax_sl, times, lateral, valid, abnormal, "Actual lateral offset"
         )
         current_index = int(np.where(valid)[0][-1])
-        current = float(lateral[current_index])
         state = "VIOLATION" if abnormal[current_index] else "NORMAL"
-        self.ax_sl.set_title(f"SL — {state} ({current:.2f} m)")
-        self.ax_sl.legend(loc="best", fontsize=7)
+        self.ax_sl.set_title(
+            f"SL — {state} ({lateral[current_index]:.2f} m)", fontproperties=EN_FONT
+        )
+        self.ax_sl.legend(loc="best", fontsize=7, prop=EN_FONT)
         return bool(abnormal[current_index])
 
     def draw_at(self, times: np.ndarray, acceleration: np.ndarray) -> bool:
         self.ax_at.clear()
-        self.ax_at.set_xlabel("Time from target appearance (s)")
-        self.ax_at.set_ylabel("Acceleration (m/s²)")
-        self.ax_at.grid(True, linestyle="--", alpha=0.25)
+        self.ax_at.set_facecolor("white")
+        self.ax_at.set_xlabel("Time from target appearance (s)", fontproperties=EN_FONT)
+        self.ax_at.set_ylabel("Acceleration (m/s²)", fontproperties=EN_FONT)
+        self.ax_at.grid(True, linestyle="--", alpha=0.22)
         self.ax_at.axhspan(
             -self.max_accel,
             self.max_accel,
-            alpha=0.14,
-            color="#22c55e",
+            color=GREEN_FILL,
+            alpha=0.82,
             label="Expected acceleration channel",
         )
-        self.ax_at.axhline(self.max_accel, linestyle="--", linewidth=1.1)
-        self.ax_at.axhline(-self.max_accel, linestyle="--", linewidth=1.1)
+        self.ax_at.axhline(self.max_accel, linestyle="--", linewidth=1.1, color=GREEN)
+        self.ax_at.axhline(-self.max_accel, linestyle="--", linewidth=1.1, color=GREEN)
         valid = np.isfinite(acceleration)
         if not np.any(valid):
-            self.ax_at.set_title("AT — waiting for acceleration")
+            self.ax_at.set_title("AT — waiting for acceleration", fontproperties=EN_FONT)
             return False
-
         abnormal = valid & (np.abs(acceleration) > self.max_accel)
         self.plot_abnormal_overlay(
             self.ax_at, times, acceleration, valid, abnormal, "Actual acceleration"
         )
         current_index = int(np.where(valid)[0][-1])
-        current = float(acceleration[current_index])
         state = "VIOLATION" if abnormal[current_index] else "NORMAL"
-        self.ax_at.set_title(f"AT — {state} ({current:.2f} m/s²)")
-        self.ax_at.legend(loc="best", fontsize=7)
+        self.ax_at.set_title(
+            f"AT — {state} ({acceleration[current_index]:.2f} m/s²)",
+            fontproperties=EN_FONT,
+        )
+        self.ax_at.legend(loc="best", fontsize=7, prop=EN_FONT)
         return bool(abnormal[current_index])
 
     def draw_result_bar(
@@ -991,19 +1092,21 @@ class ExpectedChannelMonitor:
         waiting: bool = False,
     ) -> None:
         self.ax_result.clear()
+        self.ax_result.set_facecolor("white")
         self.ax_result.set_xlim(0.0, 4.0)
         self.ax_result.set_ylim(0.0, 1.0)
         self.ax_result.axis("off")
         self.ax_result.text(
             0.02,
-            0.88,
+            0.92,
             "实时行为辨识结果（通道判定）",
             transform=self.ax_result.transAxes,
             fontsize=11,
             fontweight="bold",
             va="top",
+            fontproperties=CN_FONT,
+            color=DARK,
         )
-
         if waiting:
             states = [False, False, False, False]
         else:
@@ -1017,36 +1120,33 @@ class ExpectedChannelMonitor:
             speed_active = now - self.last_speed_abnormal_wall <= self.result_hold_seconds
             lane_active = now - self.last_lane_abnormal_wall <= self.result_hold_seconds
             accel_active = now - self.last_accel_abnormal_wall <= self.result_hold_seconds
-            normal_active = not (speed_active or lane_active or accel_active)
-            states = [normal_active, speed_active, lane_active, accel_active]
+            states = [
+                not (speed_active or lane_active or accel_active),
+                speed_active,
+                lane_active,
+                accel_active,
+            ]
 
         labels = ("正常", "速度异常", "换道异常", "加速度异常")
         for index, (label, active) in enumerate(zip(labels, states)):
             if waiting:
-                face = "#e5e7eb"
-                text_color = "#6b7280"
-                status = "等待"
+                face, text_color, status = GREY_FILL, "#6b7280", "等待"
             elif active and index == 0:
-                face = "#16a34a"
-                text_color = "white"
-                status = "当前"
+                face, text_color, status = GREEN, "white", "当前"
             elif active:
-                face = "#dc2626"
-                text_color = "white"
-                status = "检出"
+                face, text_color, status = RED, "white", "检出"
             else:
-                face = "#e5e7eb"
-                text_color = "#4b5563"
-                status = "—"
+                face, text_color, status = GREY_FILL, "#4b5563", "—"
             self.ax_result.text(
                 index + 0.5,
-                0.38,
+                0.36,
                 f"{label}  {status}",
                 ha="center",
                 va="center",
                 fontsize=12,
                 fontweight="bold" if active else "normal",
                 color=text_color,
+                fontproperties=CN_FONT,
                 bbox={
                     "boxstyle": "round,pad=0.55",
                     "facecolor": face,
@@ -1068,14 +1168,14 @@ class ExpectedChannelMonitor:
                 output_path, width, height, self.gif_fps, self.ffmpeg_bin
             )
             rospy.loginfo(
-                "Animated GIF encoder opened: %s (%dx%d, %.1f fps)",
+                "Animated GIF recorder opened: %s (%dx%d, %.1f fps)",
                 output_path,
                 width,
                 height,
                 self.gif_fps,
             )
         except OSError as exc:
-            rospy.logerr("Cannot start GIF encoder: %s", exc)
+            rospy.logerr("Cannot start GIF recorder: %s", exc)
 
     def draw(self) -> None:
         data = self.snapshot()
@@ -1085,7 +1185,7 @@ class ExpectedChannelMonitor:
         try:
             self.draw_scene()
             speed_abnormal = self.draw_st(
-                data["time"], data["speed"], data["speed_eval"]
+                data["time"], data["distance"], data["speed"], data["speed_eval"]
             )
             lane_abnormal = self.draw_sl(
                 data["time"],
@@ -1093,35 +1193,30 @@ class ExpectedChannelMonitor:
                 bool(data["sl_enabled"]),
                 str(data["sl_mode_label"]),
             )
-            accel_abnormal = self.draw_at(
-                data["time"], data["acceleration"]
-            )
+            accel_abnormal = self.draw_at(data["time"], data["acceleration"])
             self.draw_result_bar(speed_abnormal, lane_abnormal, accel_abnormal)
             self.fig.suptitle(
-                f"Reckless vehicle: {data['target_role']} / ID {data['target_id']}"
+                f"Reckless vehicle: {data['target_role']} / ID {data['target_id']}",
+                fontproperties=EN_FONT,
+                color=DARK,
             )
             self.fig.canvas.draw()
             frame = np.asarray(self.fig.canvas.buffer_rgba(), dtype=np.uint8)[:, :, :3]
             frame = np.ascontiguousarray(frame)
-
             if self.save_gif and self.gif_writer is None:
                 self.start_gif_from_frame(frame)
             now = time.monotonic()
             if (
                 self.gif_writer is not None
                 and now - self.last_gif_frame_wall >= 1.0 / self.gif_fps
+                and self.gif_writer.write(frame)
             ):
-                if self.gif_writer.write(frame):
-                    self.last_gif_frame_wall = now
-                    rospy.loginfo_throttle(
-                        5.0,
-                        "GIF recording active: %d frames",
-                        self.gif_writer.frame_count,
-                    )
+                self.last_gif_frame_wall = now
+                rospy.loginfo_throttle(
+                    5.0, "GIF recording active: %d frames", self.gif_writer.frame_count
+                )
         except Exception as exc:
-            rospy.logerr_throttle(
-                2.0, "Expected-channel draw error (node kept alive): %s", exc
-            )
+            rospy.logerr_throttle(2.0, "Expected-channel draw error: %s", exc)
         finally:
             self.pump_gui()
 
@@ -1132,29 +1227,21 @@ class ExpectedChannelMonitor:
             if plt.fignum_exists(self.fig.number):
                 self.fig.canvas.flush_events()
                 plt.pause(0.001)
-            else:
-                rospy.logwarn_throttle(
-                    3.0, "Expected-channel window was closed by the user."
-                )
         except Exception as exc:
             rospy.logwarn_throttle(3.0, "Matplotlib GUI event error: %s", exc)
 
     def close(self) -> None:
-        with self.lock:
-            if self.closed:
-                return
-            self.closed = True
-            writer = self.gif_writer
-            self.gif_writer = None
-
+        if self.closed:
+            return
+        self.closed = True
+        writer = self.gif_writer
+        self.gif_writer = None
         if writer is not None:
-            rospy.loginfo("Finalizing animated GIF with %d frames...", writer.frame_count)
-            saved_path = writer.close()
-            if saved_path is None:
-                rospy.logerr(
-                    "GIF remains unfinished. Inspect ffmpeg and temporary file: %s",
-                    writer.temp_path,
-                )
+            rospy.loginfo(
+                "Finalizing high-quality animated GIF with %d frames...",
+                writer.frame_count,
+            )
+            writer.close()
         elif self.save_gif:
             rospy.logwarn("No GIF was created because no complete frame was rendered.")
         try:
@@ -1174,9 +1261,7 @@ class ExpectedChannelMonitor:
                     rospy.signal_shutdown("scenario completed")
                     break
             except Exception as exc:
-                rospy.logerr_throttle(
-                    2.0, "Expected-channel loop error (node kept alive): %s", exc
-                )
+                rospy.logerr_throttle(2.0, "Expected-channel loop error: %s", exc)
                 self.pump_gui()
             rate.sleep()
 
