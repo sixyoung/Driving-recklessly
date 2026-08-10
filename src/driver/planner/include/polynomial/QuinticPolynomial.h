@@ -2,9 +2,9 @@
 #define QUINTICPOLYNOMIAL_H
 
 #include <cmath>
-#include <eigen3/Eigen/Core>
-#include <eigen3/Eigen/Eigen>
-#include <eigen3/Eigen/Dense>
+#include <Eigen/Core>
+#include <Eigen/Eigen>
+#include <Eigen/Dense>
 
 class QuinticPolynomial
 {

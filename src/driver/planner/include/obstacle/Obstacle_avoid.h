@@ -13,7 +13,7 @@
 #include <visualization_msgs/MarkerArray.h>
 #include <nav_msgs/Odometry.h>
 #include <nav_msgs/Path.h>
-#include <eigen3/Eigen/Dense>
+#include <Eigen/Dense>
 
 #include "CubicSpline2D.h"
 #include "path_struct.h"

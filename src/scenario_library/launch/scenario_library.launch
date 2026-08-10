@@ -33,6 +33,7 @@
   <!-- Real-time channel visualization parameters -->
   <arg name="enable_channel_visualizer" default="false"/>
   <arg name="save_channel_gif" default="false"/>
+  <arg name="show_all_gifs" default="false"/>
   <arg name="show_channel_window" default="true"/>
   <arg name="visualized_vehicle_id" default="-1"/>
   <arg name="visualized_role_name" default=""/>
@@ -116,9 +117,12 @@
               file="$(find behavior_identification)/config/realtime_channel_visualizer.yaml"/>
     <param name="scenario_path" value="$(arg scenario_path)"/>
     <param name="save_gif" value="$(arg save_channel_gif)" type="bool"/>
+    <param name="show_all_gifs" value="$(arg show_all_gifs)" type="bool"/>
     <param name="show_window" value="$(arg show_channel_window)" type="bool"/>
     <param name="vehicle_id" value="$(arg visualized_vehicle_id)" type="int"/>
     <param name="role_name" value="$(arg visualized_role_name)"/>
     <param name="gif_output_dir" value="$(arg channel_gif_output_dir)"/>
+    <param name="carla_host" value="$(arg host)"/>
+    <param name="carla_port" value="$(arg port)" type="int"/>
   </node>
 </launch>

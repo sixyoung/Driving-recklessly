@@ -2,8 +2,12 @@
 # CARLA scene | ST longitudinal-time | SL straight-road lateral | AT acceleration
 update_hz: 10.0
 gif_fps: 5.0
+# Playback duration for both synchronized GIFs. Set to 0 to use the recorded
+# wall-clock duration instead of compressing or stretching the output.
+gif_playback_duration_seconds: 4.5
 
-# Wider, lower canvas. The three channel plots receive most of the width.
+# Live canvas and the separate ST/SL/AT GIF canvas. The camera GIF uses the
+# sensor's 720 x 720 native resolution.
 gif_width: 3000
 gif_height: 620
 show_window: true
@@ -16,13 +20,26 @@ completion_status_grace_seconds: 3.0
 keep_full_history: true
 max_history_seconds: 0.0
 
-# Target selection. With vehicle_id=-1 and role_name="", wait for the fixed
-# VehicleConfig.is_random_behavior_vehicle=true vehicle.
+# Target selection. With vehicle_id=-1 and role_name="", choose the scenario's
+# abnormal/designated vehicle; if none exists, choose the first normal vehicle.
 vehicle_id: -1
 role_name: ""
 path_service: "/carla_waypoint_publisher/get_path"
 
-# Real CARLA window capture.
+# Target-following bird's-eye CARLA RGB sensor. Window capture remains a fallback
+# for the live panel only; synchronized GIFs wait for the real sensor frame.
+follow_camera_enabled: true
+carla_host: "localhost"
+carla_port: 2000
+follow_camera_width: 720
+follow_camera_height: 720
+follow_camera_fov: 75.0
+follow_camera_sensor_tick: 0.1
+follow_camera_offset_x: 0.0
+follow_camera_offset_z: 35.0
+follow_camera_pitch: -90.0
+
+# Desktop window-capture fallback.
 carla_window_title: "CarlaUE4"
 screen_auto_window: true
 screen_left: 0
@@ -30,14 +47,61 @@ screen_top: 0
 screen_width: 1280
 screen_height: 720
 
-# ST: S-T longitudinal displacement channel. The y-axis is cumulative
-# longitudinal distance s, while these speeds generate the lower/upper S-T
-# envelope after startup exemption.
+# ST: rolling S-T longitudinal-displacement channel. A new fixed-width corridor
+# is generated from the measured state every 1.5 seconds. Ordinary scenarios
+# start drawing and evaluation after the target reaches a legal speed; the
+# acceleration-scene exception is configured below.
 slow_speed_threshold: 6.0
 overspeed_threshold: 15.0
-speed_startup_grace_seconds: 5.0
-slow_require_previous_normal_speed: true
+st_activation_speed: 6.0
+speed_startup_grace_seconds: 0.0
+# Acceleration-anomaly scenarios start recording at the vehicle birth sample,
+# but do not generate or evaluate the expected ST corridor until the target
+# first reaches st_activation_speed.
+start_at_spawn_for_acceleration: true
+st_segment_seconds: 1.5
+st_channel_half_width: 12.0
+st_tracking_correction_gain: 1.0
+st_reference_accel_limit: 3.0
+st_signal_braking_distance: 80.0
+st_slow_violation_duration: 2.0
+# A slow sample is accepted as normal only when another vehicle is ahead in the
+# same lane and lies within a speed-dependent safe-following envelope. The
+# envelope includes time headway and relative-speed braking distance, so a
+# distant vehicle cannot hide genuinely abnormal slow driving.
+st_lead_detection_distance: 70.0
+st_lead_lateral_gate: 2.2
+st_lead_heading_tolerance_degrees: 50.0
+st_lead_vehicle_length: 4.5
+st_follow_time_headway: 1.5
+st_follow_standstill_gap: 4.0
+st_follow_gap_tolerance: 8.0
+st_follow_comfortable_decel: 3.0
+st_follow_hold_seconds: 2.0
+# Minimum teleport threshold. The runtime expands this from the elapsed sample
+# time and vehicle speed, so sparse but physically plausible motion is retained.
 max_position_step: 20.0
+
+# Fixed channel axes. Curves and expected bands grow into these stationary axes.
+fixed_channel_axes: true
+channel_time_axis_seconds: 60.0
+st_axis_min_distance: -10.0
+st_axis_max_distance: 1000.0
+sl_axis_abs_limit: 3.0
+at_axis_abs_limit: 5.0
+
+# Signal-controlled intersections. The nearest stop line on the frozen route is
+# applied only when VehicleConfig.scene_type=tl_intersection and
+# /traffic_light/phases is fresh. Pseudo-light messages in untl_intersection or
+# merge scenes never create a stop-line constraint. On red/yellow, the rolling
+# corridor brakes and remains behind the line; green removes the cap.
+use_scene_type_for_signal_control: true
+signalized_scene_type_value: "tl_intersection"
+traffic_light_msg_timeout: 1.0
+stop_line_lateral_gate: 8.0
+stop_line_cross_margin: 0.5
+stop_line_buffer: 2.0
+traffic_stop_decel: 3.0
 
 # SL is evaluated only for straight-road scenarios. For road_option=1/2
 # the panel remains visible but reports NOT EVALUATED.

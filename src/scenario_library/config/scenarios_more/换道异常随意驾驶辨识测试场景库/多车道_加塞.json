@@ -1,6 +1,6 @@
 {   
     "map_name": "Map02",
-    "scene_type": "tl_intersection",
+    "scene_type": "untl_intersection",
     "observer_view": {"x": 0.0, "y": -95.0, "z": 80.0, "roll": 0.0, "pitch": -90.0, "yaw": 0.0},
     "objects": 
     [

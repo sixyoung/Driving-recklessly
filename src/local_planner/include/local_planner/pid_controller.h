@@ -5,7 +5,7 @@
 #include <fstream>
 #include <ros/ros.h>
 #include <tf/tf.h>  
-#include <eigen3/Eigen/Dense> 
+#include <Eigen/Dense> 
 #include <geometry_msgs/Point.h>
 #include <geometry_msgs/Pose.h>
 #include <carla_msgs/CarlaEgoVehicleControl.h>

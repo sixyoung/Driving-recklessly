@@ -4,9 +4,9 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include <eigen3/Eigen/Core>
-#include <eigen3/Eigen/Eigen>
-#include <eigen3/Eigen/Dense>
+#include <Eigen/Core>
+#include <Eigen/Eigen>
+#include <Eigen/Dense>
 #include "trajectoryPoint.h"
 
 namespace prediction

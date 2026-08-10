@@ -190,7 +190,7 @@ def stop_roslaunch(process: subprocess.Popen) -> int:
 def gif_snapshot(output_dir: Path):
     if not output_dir.exists():
         return set()
-    return {path.resolve() for path in output_dir.glob("*_channels.gif")}
+    return {path.resolve() for path in output_dir.glob("*.gif")}
 
 
 def report_gif(output_dir: Path, before) -> None:
@@ -213,18 +213,21 @@ def run_scenario(args) -> int:
         print(f"[❌] Scenario not found: {args.scenario}")
         return 2
 
-    visualize = args.visualize_channels or args.save_gif
+    save_gif = args.save_gif or args.showall
+    visualize = args.visualize_channels or save_gif
     role = args.visualized_role or args.random_role
     output_dir = Path(args.gif_output_dir).expanduser().resolve()
-    before = gif_snapshot(output_dir) if args.save_gif else set()
+    before = gif_snapshot(output_dir) if save_gif else set()
 
     print(f"[🚀] Scenario: {scenario}")
     if visualize:
         print(
             f"[📈] Channel monitor enabled; DISPLAY={os.environ.get('DISPLAY', '<unset>')}"
         )
-    if args.save_gif:
+    if save_gif:
         print(f"[GIF] Output directory: {output_dir}")
+    if args.showall:
+        print("[GIF] Show-all output: expected channels + evaluated channels + CARLA")
 
     command = [
         "roslaunch",
@@ -235,7 +238,8 @@ def run_scenario(args) -> int:
         f"max_vehicles:={args.max_vehicles}",
         f"random_behavior_role_name:={args.random_role}",
         f"enable_channel_visualizer:={bool_arg(visualize)}",
-        f"save_channel_gif:={bool_arg(args.save_gif)}",
+        f"save_channel_gif:={bool_arg(save_gif)}",
+        f"show_all_gifs:={bool_arg(args.showall)}",
         f"show_channel_window:={bool_arg(not args.headless_channels)}",
         f"visualized_vehicle_id:={args.vehicle_id}",
         f"visualized_role_name:={role}",
@@ -263,7 +267,7 @@ def run_scenario(args) -> int:
             return_code = stop_roslaunch(process)
     finally:
         stop_recording(record_process, video_path)
-        if args.save_gif:
+        if save_gif:
             report_gif(output_dir, before)
         clean_old_processes()
     return return_code
@@ -279,6 +283,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--record", action="store_true")
     parser.add_argument("--visualize_channels", action="store_true")
     parser.add_argument("--save_gif", action="store_true")
+    parser.add_argument(
+        "--showall",
+        action="store_true",
+        help="save synchronized expected-channel, evaluated-channel, and CARLA GIFs",
+    )
     parser.add_argument("--vehicle_id", type=int, default=-1)
     parser.add_argument("--visualized_role", default="")
     parser.add_argument("--gif_output_dir", default="~/scenario_gifs")

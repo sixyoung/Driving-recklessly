@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 #include <fstream>
-#include <eigen3/Eigen/Dense>
+#include <Eigen/Dense>
 #include <boost/thread.hpp>
 #include "Obstacle.h"
 #include "object_msgs/DynamicObjectArray.h"
